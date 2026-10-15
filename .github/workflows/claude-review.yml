@@ -18,7 +18,24 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
-          plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-          claude_args: '--max-turns 15 --allowedTools "mcp__github_inline_comment__create_inline_comment"'
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are the automatic reviewer for this pull request. The pull request is checked out in the current directory.
+
+            Rules:
+            1. Read the whole diff with "gh pr diff" and read every changed file in full.
+            2. Report every way the changed code can crash, raise an unhandled error, or give a wrong result, including when it is run with missing, empty or unusual input. Never skip a problem because it depends on input.
+            3. Also report changed behaviour that the tests do not cover.
+            4. Mark each finding BLOCKING (breaks real use or gives a wrong result) or LEFTOVER (worth fixing, does not break use).
+            5. Do not run code, change files, push, approve or merge.
+            6. Post exactly one comment with "gh pr comment", passing the text directly in double quotes after --body. Do not use heredocs, backticks or command substitution. Use exactly this form:
+               ## Automatic review
+               VERDICT: PASS or FAIL
+               BLOCKING:
+               - file:line: the problem, and how to make it happen
+               LEFTOVER:
+               - file:line: the problem
+               VERDICT is FAIL if there is any BLOCKING finding, otherwise PASS. Write "none" under an empty heading.
+          claude_args: '--max-turns 15 --allowedTools "Read,Glob,Grep,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"'
