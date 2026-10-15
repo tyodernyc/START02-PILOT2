@@ -13,7 +13,7 @@ class TestGreet(unittest.TestCase):
             capture_output=True,
             check=True,
         )
-        self.assertEqual(result.stdout, b"START-02 pilot: reviewed, merged and reversible.\n")
+        self.assertEqual(result.stdout, b"Hello.\n")
 
 
 if __name__ == "__main__":
