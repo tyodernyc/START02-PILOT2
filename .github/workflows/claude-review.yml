@@ -39,3 +39,30 @@ jobs:
                - file:line: the problem
                VERDICT is FAIL if there is any BLOCKING finding, otherwise PASS. Write "none" under an empty heading.
           claude_args: '--max-turns 15 --allowedTools "Read,Glob,Grep,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"'
+      - id: gate
+        name: "Fail the check on VERDICT: FAIL"
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          body="$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments?per_page=100" \
+            | jq -r '[ .[] | select(.user.login == "claude[bot]") | select(.body | startswith("## Automatic review")) ] | sort_by(.created_at) | (last // {}) | .body // empty' \
+            | tr -d '\r')"
+          if [ -z "$body" ]; then
+            echo "GATE: no review comment found"
+            exit 1
+          fi
+          echo "--- latest claude[bot] review comment ---"
+          echo "$body"
+          echo "-----------------------------------------"
+          if printf '%s\n' "$body" | grep -qx 'VERDICT: FAIL'; then
+            echo "GATE: review verdict FAIL — blocking merge"
+            exit 1
+          fi
+          if printf '%s\n' "$body" | grep -qx 'VERDICT: PASS'; then
+            echo "GATE: review verdict PASS"
+            exit 0
+          fi
+          echo "GATE: unparseable verdict"
+          exit 1
