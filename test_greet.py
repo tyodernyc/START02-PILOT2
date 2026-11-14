@@ -83,6 +83,35 @@ class TestGreet(unittest.TestCase):
         )
         self.check(result, b"Hello.\n")
 
+    # W1
+    def test_closed_pipe(self):
+        read_end, write_end = os.pipe()
+        os.close(read_end)
+        try:
+            result = subprocess.run(
+                [sys.executable, GREET, "Ana"],
+                stdin=subprocess.DEVNULL,
+                stdout=write_end,
+                stderr=subprocess.PIPE,
+            )
+        finally:
+            os.close(write_end)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, b"")
+
+    # W1
+    @unittest.skipUnless(os.path.exists("/dev/full"), "/dev/full does not exist")
+    def test_full_device(self):
+        with open("/dev/full", "wb", buffering=0) as full:
+            result = subprocess.run(
+                [sys.executable, GREET, "Ana"],
+                stdin=subprocess.DEVNULL,
+                stdout=full,
+                stderr=subprocess.PIPE,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, b"")
+
 
 if __name__ == "__main__":
     unittest.main()

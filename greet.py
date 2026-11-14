@@ -16,7 +16,20 @@ def greeting(arguments):
 def main():
     if sys.stdout is None:
         return
-    sys.stdout.buffer.write(greeting(sys.argv[1:]))
+    data = memoryview(greeting(sys.argv[1:]))
+    # Write through the unbuffered layer. Nothing is then left in a buffer
+    # for the interpreter to flush at exit, so a standard output that cannot
+    # be written (reader gone, device full) ends the program quietly.
+    stream = sys.stdout.buffer
+    stream = getattr(stream, "raw", stream)
+    try:
+        while data:
+            written = stream.write(data)
+            if not written:
+                return
+            data = data[written:]
+    except OSError:
+        return
 
 
 if __name__ == "__main__":
