@@ -12,6 +12,9 @@ jobs:
       issues: read
       id-token: write
     steps:
+      - id: start
+        name: Record when this run started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
@@ -21,6 +24,7 @@ jobs:
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD COMMIT: ${{ github.event.pull_request.head.sha }}
 
             You are the automatic reviewer for this pull request. The pull request is checked out in the current directory.
 
@@ -32,37 +36,26 @@ jobs:
             5. Do not run code, change files, push, approve or merge.
             6. Post exactly one comment with "gh pr comment", passing the text directly in double quotes after --body. Do not use heredocs, backticks or command substitution. Use exactly this form:
                ## Automatic review
+               HEAD: the HEAD COMMIT value given above, all 40 characters, copied exactly
                VERDICT: PASS or FAIL
                BLOCKING:
                - file:line: the problem, and how to make it happen
                LEFTOVER:
                - file:line: the problem
                VERDICT is FAIL if there is any BLOCKING finding, otherwise PASS. Write "none" under an empty heading.
+            7. The first line of the comment is the heading, the second line is the HEAD line and the third line is the VERDICT line. No other line of the comment may begin with HEAD: or VERDICT:.
           claude_args: '--max-turns 15 --allowedTools "Read,Glob,Grep,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"'
       - id: gate
-        name: "Fail the check on VERDICT: FAIL"
+        name: "Fail the check unless this head commit has a fresh VERDICT: PASS"
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_START: ${{ steps.start.outputs.at }}
         run: |
-          set -uo pipefail
-          body="$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments?per_page=100" \
-            | jq -r '[ .[] | select(.user.login == "claude[bot]") | select(.body | startswith("## Automatic review")) ] | sort_by(.created_at) | (last // {}) | .body // empty' \
-            | tr -d '\r')"
-          if [ -z "$body" ]; then
-            echo "GATE: no review comment found"
-            exit 1
-          fi
-          echo "--- latest claude[bot] review comment ---"
-          echo "$body"
-          echo "-----------------------------------------"
-          if printf '%s\n' "$body" | grep -qx 'VERDICT: FAIL'; then
-            echo "GATE: review verdict FAIL — blocking merge"
-            exit 1
-          fi
-          if printf '%s\n' "$body" | grep -qx 'VERDICT: PASS'; then
-            echo "GATE: review verdict PASS"
-            exit 0
-          fi
-          echo "GATE: unparseable verdict"
-          exit 1
+          set -euo pipefail
+          echo "GATE: head ${HEAD_SHA}, run started ${RUN_START}"
+          gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" > "${RUNNER_TEMP}/review-comments.json"
+          python3 .github/scripts/review_gate.py "${RUNNER_TEMP}/review-comments.json"
