@@ -59,3 +59,4 @@ jobs:
           echo "GATE: head ${HEAD_SHA}, run started ${RUN_START}"
           gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" > "${RUNNER_TEMP}/review-comments.json"
           python3 .github/scripts/review_gate.py "${RUNNER_TEMP}/review-comments.json"
+# pilot 8 probe B: comment-only line
