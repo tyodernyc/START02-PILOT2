@@ -253,8 +253,10 @@ def _report(reason):
 def main(argv):
     # A check run's id is "an integer of 1 or more" with no upper bound, so
     # the interpreter's default cap on the length of an integer's text is
-    # lifted.
-    sys.set_int_max_str_digits(0)
+    # lifted. A Python without the function that lifts it is left as it is:
+    # the function is not called there and nothing is put in its place.
+    if hasattr(sys, "set_int_max_str_digits"):
+        sys.set_int_max_str_digits(0)
     try:
         if len(argv) != 3:
             raise BadInput(WRONG_ARGUMENTS)
