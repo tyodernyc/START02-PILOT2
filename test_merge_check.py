@@ -869,6 +869,16 @@ class TestFurtherHardening(Case):
         body = "## Open questions\r\n~~~\r\n# note\r\n~~~\r\n1. Which table?\r\n"
         self.body_says(body, "OWNER: open-question")
 
+    def test_h6_backtick_fence_text_holding_a_backtick_is_not_a_fence_line(self):
+        body = "## Summary\n```a``` text\n## Open questions\nWhich table?\n"
+        self.body_says(body, "OWNER: open-question")
+        body = "## Summary\n```\ncode\n```a```\n## Open questions\nWhich table?\n"
+        self.body_says(body, "MERGE")
+        body = "## Summary\n```python\ncode\n```\n## Open questions\nWhich table?\n"
+        self.body_says(body, "OWNER: open-question")
+        body = "## Summary\n~~~a`b\ncode\n~~~\n## Open questions\nWhich table?\n"
+        self.body_says(body, "OWNER: open-question")
+
     # H7 / V3
     def test_h7_changed_files_larger_than_the_list(self):
         self.says(snapshot(pull=with_pull(changed_files=3)), "OWNER: paths")

@@ -343,6 +343,7 @@ def fence_marker(line):
 
     A fence line is indented 0 to 3 spaces and then starts with three or more
     backticks or three or more tildes; the run is all of the same character.
+    After a run of backticks the rest of the line may not hold a backtick.
     """
     indent = len(line) - len(line.lstrip(" "))
     if indent > 3:
@@ -354,7 +355,10 @@ def fence_marker(line):
     length = len(text) - len(text.lstrip(character))
     if length < 3:
         return None
-    return character, length, text[length:]
+    rest = text[length:]
+    if character == "`" and "`" in rest:
+        return None  # the text after backticks may not hold a backtick: this is inline code
+    return character, length, rest
 
 
 def fenced_lines(lines):
