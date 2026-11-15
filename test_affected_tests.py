@@ -355,5 +355,86 @@ class TestRules(AffectedTestsBase):
         self.assertNotIn(b"Traceback", result.stderr)
 
 
+
+class TestHardening(AffectedTestsBase):
+    """Build request #44: F3 (unwritable standard error or output) and F4
+    (targets at the repository root)."""
+
+    def test_f3_unwritable_standard_error_still_gives_status_2(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full not available")
+        with open("/dev/full", "wb") as full:
+            result = subprocess.run(
+                [sys.executable, PROGRAM],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=full,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+
+    def test_f3_unwritable_standard_error_with_bad_target(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full not available")
+        with open(self.ws.targets_file, "w") as handle:
+            handle.write("bad-name\n")
+        with open("/dev/full", "wb") as full:
+            result = subprocess.run(
+                [sys.executable, PROGRAM, self.ws.root, self.ws.targets_file],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=full,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+
+    def test_f3_unwritable_standard_output_gives_status_1(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full not available")
+        self.ws.add("test_a.py", "import attention\n")
+        with open(self.ws.targets_file, "w") as handle:
+            handle.write("attention.py\n")
+        with open("/dev/full", "wb") as full:
+            result = subprocess.run(
+                [sys.executable, PROGRAM, self.ws.root, self.ws.targets_file],
+                stdin=subprocess.DEVNULL,
+                stdout=full,
+                stderr=subprocess.PIPE,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_f4_root_level_file_is_a_path_with_the_term_of_its_stem(self):
+        self.ws.add("test_a.py", "import attention\n")
+        self.ws.add("test_b.py", "import attention_extra\n")
+        self.ws.add("tests/test_c.py", "from attention import main\n")
+        self.assertListed(
+            self.ws.run("attention.py\n"), ["test_a.py", "tests/test_c.py"]
+        )
+
+    def test_f4_root_level_test_file_target_is_listed_without_a_mention(self):
+        self.ws.add("test_a.py", "nothing here\n")
+        self.ws.add("test_b.py", "nothing here\n")
+        self.assertListed(self.ws.run("test_a.py\n"), ["test_a.py"])
+
+    def test_f4_dot_segments_are_still_rejected(self):
+        for bad in ("./x.py", "../x.py", "./attention.py", ".", ".."):
+            with self.subTest(target=bad):
+                self.assertBadInput(self.ws.run(bad + "\n"))
+
+    def test_f4_bad_name_is_still_rejected(self):
+        self.assertBadInput(self.ws.run("bad-name\n"))
+
+    def test_f4_name_without_slash_or_dot_is_still_a_name(self):
+        self.ws.add("test_a.py", "uses foo here\n")
+        self.ws.add("test_b.py", "uses foobar here\n")
+        self.assertListed(self.ws.run("foo\n"), ["test_a.py"])
+
+    def test_f4_dotted_root_level_target_is_checked_as_a_path(self):
+        self.assertBadInput(self.ws.run("a\\b.py\n"))
+        self.ws.add("test_a.py", "run archive.tar now\n")
+        self.assertListed(self.ws.run("archive.tar.gz\n"), ["test_a.py"])
+
+
 if __name__ == "__main__":
     unittest.main()

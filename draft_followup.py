@@ -9,6 +9,7 @@ request's head commit and prints a draft follow-up request that lists the
 review's LEFTOVER findings. It never files, posts or changes anything, does
 no network access and opens only the two named files, for reading.
 
+Input holding NaN, Infinity or -Infinity (not JSON) is bad input.
 Exit status: 0 success, 1 the result could not be written, 2 bad input.
 Runs on Python 3.8 or later; standard library only.
 """
@@ -64,6 +65,11 @@ def need(condition, message):
         raise BadInput(message)
 
 
+def reject_constant(name):
+    """NaN, Infinity and -Infinity are not JSON; Python's decoder takes them."""
+    raise BadInput("the file holds " + name + ", which is not JSON")
+
+
 def load(path, what):
     try:
         with open(path, "rb") as handle:
@@ -71,7 +77,7 @@ def load(path, what):
     except (OSError, ValueError):
         raise BadInput("cannot read the " + what + " file")
     try:
-        return json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
     except (ValueError, RecursionError, MemoryError):
         raise BadInput("the " + what + " file is not UTF-8 JSON")
 
@@ -164,17 +170,25 @@ def build_output(number, sha, comments):
     return TEMPLATE_HEAD.format(number=number, sha=sha) + numbered + TEMPLATE_TAIL
 
 
-def write_stdout(text):
-    # Written straight to file descriptor 1, so no buffered data is left in
-    # sys.stdout when a write fails (a failed flush at interpreter exit would
-    # otherwise turn the exit status into 120). Text that cannot be encoded
-    # (a lone surrogate from a JSON escape) gets a replacement character.
+def write_fd(descriptor, text):
+    # Written straight to a file descriptor, so no buffered data is left in
+    # sys.stdout or sys.stderr when a write fails (a failed flush at
+    # interpreter exit would otherwise turn the exit status into 120). Text
+    # that cannot be encoded (a lone surrogate from a JSON escape) gets a
+    # replacement character.
     view = memoryview(text.encode("utf-8", "replace"))
     while len(view):
-        view = view[os.write(1, view):]
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("nothing was written")
+        view = view[written:]
 
 
 def main(argv):
+    # A valid JSON integer may have any number of digits, so the interpreter's
+    # cap on the length of an integer's text is lifted where it exists.
+    if hasattr(sys, "set_int_max_str_digits"):
+        sys.set_int_max_str_digits(0)
     try:
         need(len(argv) == 3, "usage: python draft_followup.py PULL_FILE COMMENTS_FILE")
         number, sha = check_pull(load(argv[1], "pull request"))
@@ -183,13 +197,12 @@ def main(argv):
         output = build_output(number, sha, comments)
     except BadInput as error:
         try:
-            sys.stderr.write(PREFIX + str(error) + "\n")
-            sys.stderr.flush()
+            write_fd(2, PREFIX + str(error) + "\n")
         except Exception:
             pass
         return 2
     try:
-        write_stdout(output)
+        write_fd(1, output)
     except Exception:
         return 1
     return 0

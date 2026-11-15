@@ -329,5 +329,95 @@ class ExtraTests(Case):
                          ["comments.json", "pull.json"])
 
 
+
+def ignored(data, raw_value):
+    """The JSON text of the object data with an ignored field holding raw_value."""
+    return (json.dumps(data)[:-1] + ',"extra":' + raw_value + "}").encode("utf-8")
+
+
+class HardeningTests(Case):
+    """Build request #44: F1 (non-JSON constants), F2 (large integers) and
+    F3 (unwritable standard error or output)."""
+
+    def test_f1_non_json_constants_are_bad_input(self):
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            for where in ("pull", "comments"):
+                with self.subTest(constant=constant, where=where):
+                    pull_data = pull()
+                    comment_data = comment(1, review_body(["x"]))
+                    if where == "pull":
+                        pull_file = self.write("pull.json", ignored(pull_data, constant))
+                        comments_file = self.write("comments.json", [comment_data])
+                    else:
+                        pull_file = self.write("pull.json", pull_data)
+                        comments_file = self.write(
+                            "comments.json",
+                            b"[" + ignored(comment_data, constant) + b"]",
+                        )
+                    self.bad([pull_file, comments_file])
+
+    def test_f1_constant_inside_a_nested_ignored_field(self):
+        raw = json.dumps(pull())[:-1] + ',"extra":{"a":[1,{"b":-Infinity}]}}'
+        self.bad([
+            self.write("pull.json", raw.encode("utf-8")),
+            self.write("comments.json", []),
+        ])
+
+    def test_f1_names_that_merely_look_like_constants_are_text(self):
+        data = pull()
+        data["extra"] = ["NaN", "Infinity", "-Infinity"]
+        self.ok(data, [], b"NO REVIEW\n")
+
+    def test_f2_five_thousand_digit_integer_in_an_ignored_field(self):
+        digits = "9" * 5000
+        comments = [comment(1, review_body(["alpha", "beta"]))]
+        expected = template(5, H, ["alpha", "beta"])
+        for raw in (digits, "-" + digits):
+            for where in ("pull", "comments"):
+                with self.subTest(where=where, raw=raw[:2]):
+                    if where == "pull":
+                        pull_file = self.write("pull.json", ignored(pull(), raw))
+                        comments_file = self.write("comments.json", comments)
+                    else:
+                        pull_file = self.write("pull.json", pull())
+                        comments_file = self.write(
+                            "comments.json",
+                            b"[" + ignored(comments[0], raw) + b"]",
+                        )
+                    code, out, err = self.run_args([pull_file, comments_file])
+                    self.assertEqual((code, err), (0, b""))
+                    self.assertEqual(out, expected)
+
+    def test_f3_unwritable_standard_error_still_gives_status_2(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full not available")
+        with open("/dev/full", "wb") as full:
+            result = subprocess.run(
+                [sys.executable, PROGRAM],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=full,
+                cwd=self.dir.name,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+
+    def test_f3_unwritable_standard_output_gives_status_1(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full not available")
+        pull_file = self.write("pull.json", pull())
+        comments_file = self.write("comments.json", [comment(1, review_body(["x"]))])
+        with open("/dev/full", "wb") as full:
+            result = subprocess.run(
+                [sys.executable, PROGRAM, pull_file, comments_file],
+                stdin=subprocess.DEVNULL,
+                stdout=full,
+                stderr=subprocess.PIPE,
+                cwd=self.dir.name,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

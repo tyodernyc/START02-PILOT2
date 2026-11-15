@@ -3,6 +3,9 @@
 Usage: python affected_tests.py ROOT TARGETS_FILE
 
 It only reads files. It never runs tests and never uses the network.
+
+A target containing "/" or "." is a path; any other target is a name and
+must match [A-Za-z_][A-Za-z0-9_]*.
 """
 import fnmatch
 import os
@@ -28,6 +31,11 @@ class BadInput(Exception):
     """The command line or the targets file is unusable (exit status 2)."""
 
 
+def is_path(target):
+    """A target containing "/" or "." is a path; any other target is a name."""
+    return "/" in target or "." in target
+
+
 def parse_targets(text):
     """Return the validated targets of the targets file text, in order."""
     targets = []
@@ -35,7 +43,7 @@ def parse_targets(text):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        if "/" in line:
+        if is_path(line):
             if line.startswith("/") or "\\" in line:
                 raise BadInput("invalid target path")
             if any(segment in ("", ".", "..") for segment in line.split("/")):
@@ -50,9 +58,9 @@ def parse_targets(text):
 
 def search_term(target):
     """Return the search term of a target (S2)."""
-    if "/" not in target:
+    if not is_path(target):
         return target
-    return posixpath.splitext(target.rsplit("/", 1)[1])[0]
+    return posixpath.splitext(target.rsplit("/", 1)[-1])[0]
 
 
 def term_pattern(term):
@@ -93,7 +101,7 @@ def find_test_files(root):
 
 def affected(root, targets):
     patterns = [term_pattern(t) for t in {search_term(x) for x in targets}]
-    target_paths = {t for t in targets if "/" in t}
+    target_paths = {t for t in targets if is_path(t)}
     result = []
     for path, full in find_test_files(root):
         if path in target_paths:
@@ -117,19 +125,18 @@ def read_targets(path):
         raise BadInput("cannot read targets file")
 
 
-def write_all(data):
-    """Write data to standard output; return False if that is not possible."""
-    if sys.stdout is None:
-        return False
-    # Write through the unbuffered layer so that nothing is left in a buffer
-    # for the interpreter to flush (and fail on) at exit.
-    stream = sys.stdout.buffer
-    stream = getattr(stream, "raw", stream)
+def write_fd(descriptor, data):
+    """Write the bytes to a file descriptor; return False if that fails.
+
+    Written with os.write, so that nothing is left in a buffer for the
+    interpreter to flush (and fail on) at exit, which would turn the exit
+    status into 120.
+    """
     view = memoryview(data)
     try:
         while view:
-            written = stream.write(view)
-            if not written:
+            written = os.write(descriptor, view)
+            if written <= 0:
                 return False
             view = view[written:]
     except (OSError, ValueError):
@@ -137,12 +144,13 @@ def write_all(data):
     return True
 
 
+def write_all(data):
+    """Write data to standard output; return False if that is not possible."""
+    return write_fd(1, data)
+
+
 def fail(message, status):
-    try:
-        sys.stderr.write(PREFIX + message + "\n")
-        sys.stderr.flush()
-    except (OSError, ValueError, AttributeError):
-        pass
+    write_fd(2, (PREFIX + message + "\n").encode("utf-8", "replace"))
     return status
 
 
