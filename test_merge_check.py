@@ -2,7 +2,8 @@
 
 Every check V1 to V12 of build request #46 has at least one test method
 named after it, and every amendment A1 to A5 of build request #48 has tests
-in TestAmendments. Each case runs the program as a separate process and compares
+in TestAmendments, and every change H1 to H5 of build request #50 has tests
+in TestHardening. Each case runs the program as a separate process and compares
 standard output, standard error and the exit status exactly. The tests named
 test_extra_* cover the rest of the specification (S1 to S5).
 """
@@ -211,15 +212,16 @@ class TestRules(Case):
         # A prefix without a slash matches only that exact name.
         self.says(snapshot(files=files("AGENTS.md.bak", "docsy/x.md"), allowed=["*"]), "MERGE")
 
-    def test_v8_custom_protected_list_replaces_the_default(self):
+    def test_v8_custom_protected_list_adds_to_the_default(self):
+        # Superseded by build request #50 (H1): a custom list only adds prefixes.
         data = snapshot(files=files("docs/x.md"), allowed=["docs/*"], protected=["secret/"])
-        self.says(data, "MERGE")
+        self.says(data, "OWNER: protected")
         data = snapshot(files=files("secret/key.txt"), allowed=["*"], protected=["secret/"])
         self.says(data, "OWNER: protected")
         data = snapshot(files=files("secret"), allowed=["*"], protected=["secret"])
         self.says(data, "OWNER: protected")
         data = snapshot(files=files(".github/ci.yml"), allowed=["*"], protected=[])
-        self.says(data, "MERGE")
+        self.says(data, "OWNER: protected")
 
     def test_v9_open_questions_none(self):
         for text in ("none", "- none", "None", "  - NONE  ", ""):
@@ -669,6 +671,136 @@ class TestAmendments(Case):
             with self.subTest(heading=heading):
                 body = "## Open questions\nnone\n%s\nWhy is this?\n" % heading
                 self.says(snapshot(pull=with_pull(body=body)), "MERGE")
+
+
+def with_runs(runs, **extra):
+    entry = {"check_runs": runs}
+    entry.update(extra)
+    return entry
+
+
+class TestHardening(Case):
+    """Build request #50: changes H1 to H5 (checks V1 to V6)."""
+
+    # H1 / V1
+    def test_h1_empty_protected_list_keeps_the_defaults(self):
+        data = snapshot(files=files(".github/workflows/x.yml"), allowed=["*"], protected=[])
+        self.says(data, "OWNER: protected")
+        for name in ("docs/a.md", "apps/backend/prisma/m.sql", "AGENTS.md", "CLAUDE.md"):
+            with self.subTest(name=name):
+                self.says(snapshot(files=files(name), allowed=["*"], protected=[]), "OWNER: protected")
+
+    def test_h1_listed_prefix_adds_to_the_defaults(self):
+        data = snapshot(files=files("docs/a.md"), allowed=["*"], protected=["src/secret/"])
+        self.says(data, "OWNER: protected")
+        data = snapshot(files=files("src/secret/k.txt"), allowed=["*"], protected=["src/secret/"])
+        self.says(data, "OWNER: protected")
+        data = snapshot(files=files("src/other/k.txt"), allowed=["*"], protected=["src/secret/"])
+        self.says(data, "MERGE")
+
+    def test_h1_absent_list_still_uses_the_defaults(self):
+        self.says(snapshot(files=files(".github/x.yml"), allowed=["*"]), "OWNER: protected")
+
+    # H2 / V2
+    def test_h2_mergeable_state_other_than_clean(self):
+        for state in ("dirty", "behind", "blocked", "unstable", "unknown", "has_hooks", ""):
+            with self.subTest(state=state):
+                self.says(snapshot(pull=with_pull(mergeable_state=state)), "OWNER: not-mergeable")
+
+    def test_h2_clean_absent_or_null_is_not_reported(self):
+        self.says(snapshot(pull=with_pull(mergeable_state="clean")), "MERGE")
+        self.says(snapshot(pull=with_pull(mergeable_state=None)), "MERGE")
+        self.says(snapshot(), "MERGE")
+
+    def test_h2_comes_right_after_not_open(self):
+        data = snapshot(
+            pull=with_pull(state="closed", mergeable_state="dirty"),
+            check_runs={"check_runs": []},
+        )
+        self.says(data, "OWNER: not-open, not-mergeable, checks")
+
+    def test_h2_state_that_is_not_a_string_is_bad_input(self):
+        for value in (5, True, ["clean"], {}):
+            with self.subTest(value=value):
+                self.bad_snapshot(snapshot(pull=with_pull(mergeable_state=value)))
+
+    # H3 / V3
+    def test_h3_badge_in_the_codex_summary_comment(self):
+        for badge in ("P1 Badge", "P0 Badge"):
+            with self.subTest(badge=badge):
+                body = "Codex Review: Didn't find any major issues.\n\n![%s](x) Crash\n\nReviewed commit: `%s`" % (badge, H[:10])
+                data = snapshot(issue_comments=[claude_review(), comment(2, CODEX, body)])
+                self.says(data, "OWNER: codex-p1")
+
+    def test_h3_only_the_deciding_codex_comment_counts(self):
+        old = "![P1 Badge](x) old\n\nReviewed commit: `%s`" % H[:10]
+        data = snapshot(issue_comments=[claude_review(), comment(1, CODEX, old), codex_review(comment_id=2)])
+        self.says(data, "MERGE")
+        other = "![P1 Badge](x)\n\nReviewed commit: `%s`" % H2[:10]
+        data = snapshot(issue_comments=[claude_review(), codex_review(), comment(3, CODEX, other)])
+        self.says(data, "MERGE")
+        stranger = "![P1 Badge](x)\n\nReviewed commit: `%s`" % H[:10]
+        data = snapshot(issue_comments=[claude_review(), codex_review(), comment(3, "someone-else", stranger)])
+        self.says(data, "MERGE")
+
+    def test_h3_without_a_deciding_comment_only_codex_review_is_reported(self):
+        self.says(snapshot(issue_comments=[claude_review()]), "OWNER: codex-review")
+
+    # H4 / V4
+    def test_h4_heading_like_line_in_a_fence_does_not_end_the_section(self):
+        body = "## Open questions\n```\n# note\n```\n1. Which table?\n"
+        self.says(snapshot(pull=with_pull(body=body)), "OWNER: open-question")
+
+    def test_h4_fenced_heading_does_not_start_a_section(self):
+        body = "## Summary\n```\n## Open questions\nWhich table?\n```\n"
+        self.says(snapshot(pull=with_pull(body=body)), "MERGE")
+
+    def test_h4_real_heading_after_the_fence_still_ends_the_section(self):
+        body = "## Open questions\nnone\n```\n# x\n```\n"
+        self.says(snapshot(pull=with_pull(body=body)), "OWNER: open-question")
+        body = "## Open questions\nnone\n## Tests\n```\n# x\n```\n"
+        self.says(snapshot(pull=with_pull(body=body)), "MERGE")
+
+    def test_h4_unclosed_fence_runs_to_the_end(self):
+        body = "## Open questions\n```\n## Tests\nall\n"
+        self.says(snapshot(pull=with_pull(body=body)), "OWNER: open-question")
+
+    # H5 / V5
+    def test_h5_total_count_larger_than_the_list(self):
+        runs = with_runs([run(1, "tests"), run(2, "review")], total_count=3)
+        self.says(snapshot(check_runs=runs), "OWNER: checks")
+        one = with_runs([run(1, "tests")], total_count=2)
+        self.says(snapshot(check_runs=one), "OWNER: checks")
+
+    def test_h5_total_count_equal_smaller_or_absent_is_not_reported(self):
+        for total in (2, 1, 0, None):
+            with self.subTest(total=total):
+                runs = with_runs([run(1, "tests"), run(2, "review")], total_count=total)
+                self.says(snapshot(check_runs=runs), "MERGE")
+
+    def test_h5_total_count_that_is_not_an_integer_is_bad_input(self):
+        for value in ("2", 2.5, True, [2]):
+            with self.subTest(value=value):
+                self.bad_snapshot(snapshot(check_runs=with_runs([run(1, "tests"), run(2, "review")], total_count=value)))
+
+    def test_h5_files_truncated_reports_paths(self):
+        self.says(snapshot(files_truncated=True), "OWNER: paths")
+
+    def test_h5_files_truncated_false_or_null_is_not_reported(self):
+        self.says(snapshot(files_truncated=False), "MERGE")
+        self.says(snapshot(files_truncated=None), "MERGE")
+
+    def test_h5_files_truncated_that_is_not_a_boolean_is_bad_input(self):
+        for value in ("true", 1, [True]):
+            with self.subTest(value=value):
+                self.bad_snapshot(snapshot(files_truncated=value))
+
+    def test_h5_both_reasons_together_in_rule_order(self):
+        data = snapshot(
+            check_runs=with_runs([run(1, "tests"), run(2, "review")], total_count=9),
+            files_truncated=True,
+        )
+        self.says(data, "OWNER: checks, paths")
 
 
 class TestOutputFailures(Case):
