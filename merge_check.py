@@ -1,4 +1,4 @@
-"""Decide whether the coordinator may merge without the owner (build requests #46 and #48).
+"""Decide whether the coordinator may merge without the owner (build requests #46, #48, #50 and #52).
 
 Usage: python merge_check.py SNAPSHOT_FILE
 
@@ -119,11 +119,20 @@ def read_files(value):
     return names, len(entries)
 
 
+def read_changed_files(pull):
+    """The pull request's own count of changed files, or None when it is absent or null."""
+    value = pull.get("changed_files")
+    need(value is None or is_int(value), "the pull request changed_files must be an integer or null")
+    need(value is None or value >= 0, "the pull request changed_files must not be negative")
+    return value
+
+
 def read_check_runs(value):
     """Return the runs and whether the list is incomplete (total_count is larger)."""
     entry = need_dict(value, "check_runs must be an object")
     total = entry.get("total_count")
     need(total is None or is_int(total), "the check run total_count must be an integer or null")
+    need(total is None or total >= 0, "the check run total_count must not be negative")
     runs = []
     for run in need_list(entry.get("check_runs"), "check_runs must hold a list"):
         need_dict(run, "a check run must be an object")
@@ -207,6 +216,7 @@ def read_snapshot(data):
         "body": body,
         "files": names,
         "file_count": count,
+        "changed_files": read_changed_files(data["pull"]),
         "runs": runs,
         "runs_incomplete": runs_incomplete,
         "files_truncated": read_truncated(data),
@@ -303,6 +313,8 @@ def rule_codex_p1(snap):
 def rule_paths(snap):
     if snap["files_truncated"]:
         return True  # the list of changed files is cut short
+    if snap["changed_files"] is not None and snap["changed_files"] > snap["file_count"]:
+        return True  # the pull request has more changed files than the list holds
     if snap["file_count"] == 0:
         return True  # nothing changed, so there is nothing to merge
     for name in snap["files"]:
@@ -326,20 +338,52 @@ def is_heading(line):
     return len(line) >= 2 and line[0] == "#" and line[1] in "# "
 
 
+def fence_marker(line):
+    """Return (character, length, rest of the line) if the line is a fence line, else None.
+
+    A fence line is indented 0 to 3 spaces and then starts with three or more
+    backticks or three or more tildes; the run is all of the same character.
+    """
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > 3:
+        return None
+    text = line[indent:]
+    if text[:1] not in ("`", "~"):
+        return None
+    character = text[0]
+    length = len(text) - len(text.lstrip(character))
+    if length < 3:
+        return None
+    return character, length, text[length:]
+
+
 def fenced_lines(lines):
     """For each line, True if it is a fence line or lies inside a fenced code block.
 
-    A fence line starts with three backticks; it opens a block, and the next
-    fence line closes it. A block that is never closed runs to the end.
+    A fence opens on a fence line (see fence_marker). It closes only on a fence
+    line of the same character with at least as many characters as the opening
+    line and nothing after them but spaces. A block that is never closed runs
+    to the end.
     """
     flags = []
-    inside = False
+    opened = None
     for line in lines:
-        if line.startswith("```"):
-            flags.append(True)
-            inside = not inside
+        marker = fence_marker(line)
+        if opened is None:
+            if marker is None:
+                flags.append(False)
+            else:
+                opened = marker
+                flags.append(True)
         else:
-            flags.append(inside)
+            flags.append(True)
+            if (
+                marker is not None
+                and marker[0] == opened[0]
+                and marker[1] >= opened[1]
+                and marker[2].strip(" ") == ""
+            ):
+                opened = None
     return flags
 
 

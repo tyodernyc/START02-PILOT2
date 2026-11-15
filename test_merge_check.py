@@ -3,7 +3,8 @@
 Every check V1 to V12 of build request #46 has at least one test method
 named after it, and every amendment A1 to A5 of build request #48 has tests
 in TestAmendments, and every change H1 to H5 of build request #50 has tests
-in TestHardening. Each case runs the program as a separate process and compares
+in TestHardening, and every change H6 to H8 of build request #52 has tests
+in TestFurtherHardening. Each case runs the program as a separate process and compares
 standard output, standard error and the exit status exactly. The tests named
 test_extra_* cover the rest of the specification (S1 to S5).
 """
@@ -801,6 +802,117 @@ class TestHardening(Case):
             files_truncated=True,
         )
         self.says(data, "OWNER: checks, paths")
+
+
+class TestFurtherHardening(Case):
+    """Build request #52: changes H6 to H8 and checks V1 to V5."""
+
+    def open_question(self, *middle, **kwargs):
+        lines = ["## Open questions"] + list(middle) + ["1. Which table?", ""]
+        self.says(snapshot(pull=with_pull(body="\n".join(lines))), "OWNER: open-question")
+
+    def body_says(self, body, expected):
+        self.says(snapshot(pull=with_pull(body=body)), expected)
+
+    # H6 / V1
+    def test_h6_fence_indented_two_spaces_opens_a_block(self):
+        self.open_question("  ```", "# note", "```")
+
+    def test_h6_tilde_fence_opens_a_block(self):
+        self.open_question("~~~", "# note", "~~~")
+        self.open_question("  ~~~", "# note", "  ~~~")
+
+    # H6 / V2
+    def test_h6_four_backtick_fence_is_not_closed_by_three(self):
+        body = "## Open questions\n````\n```\n# note\n````\n1. Which table?\n"
+        self.body_says(body, "OWNER: open-question")
+        body = "## Summary\n````\n```\n## Open questions\nWhich table?\n````\n"
+        self.body_says(body, "MERGE")
+        body = "## Summary\n````\n```\n## Open questions\nWhich table?\n"
+        self.body_says(body, "MERGE")
+
+    def test_h6_longer_closing_line_closes_the_block(self):
+        body = "## Summary\n```\n## Open questions\n`````\nSummary text\n## Open questions\nnone\n"
+        self.body_says(body, "MERGE")
+
+    def test_h6_closing_line_with_trailing_spaces_closes(self):
+        body = "## Summary\n```\ncode\n```   \n## Open questions\nWhich table?\n"
+        self.body_says(body, "OWNER: open-question")
+
+    def test_h6_closing_line_with_other_text_does_not_close(self):
+        body = "## Summary\n```\n``` not a close\n## Open questions\nWhich table?\n```\n"
+        self.body_says(body, "MERGE")
+
+    def test_h6_closing_line_must_use_the_same_character(self):
+        body = "## Summary\n```\n~~~\n## Open questions\nWhich table?\n```\n"
+        self.body_says(body, "MERGE")
+        body = "## Summary\n~~~\n```\n## Open questions\nWhich table?\n~~~\n"
+        self.body_says(body, "MERGE")
+
+    def test_h6_four_space_indent_is_not_a_fence_line(self):
+        body = "## Open questions\nnone\n    ```\n## Tests\nall\n"
+        self.body_says(body, "OWNER: open-question")
+        body = "## Summary\n```\n    ```\n## Open questions\nWhich table?\n```\n"
+        self.body_says(body, "MERGE")
+
+    def test_h6_two_characters_are_not_a_fence_line(self):
+        body = "## Summary\n``\n## Open questions\nWhich table?\n"
+        self.body_says(body, "OWNER: open-question")
+        body = "## Summary\n~~\n## Open questions\nWhich table?\n"
+        self.body_says(body, "OWNER: open-question")
+
+    def test_h6_unclosed_tilde_fence_runs_to_the_end(self):
+        body = "## Open questions\n~~~\n## Tests\nall\n"
+        self.body_says(body, "OWNER: open-question")
+
+    def test_h6_carriage_returns_do_not_break_a_closing_line(self):
+        body = "## Open questions\r\n~~~\r\n# note\r\n~~~\r\n1. Which table?\r\n"
+        self.body_says(body, "OWNER: open-question")
+
+    # H7 / V3
+    def test_h7_changed_files_larger_than_the_list(self):
+        self.says(snapshot(pull=with_pull(changed_files=3)), "OWNER: paths")
+
+    def test_h7_equal_smaller_null_or_absent_is_not_reported(self):
+        for value in (2, 1, 0, None):
+            with self.subTest(value=value):
+                self.says(snapshot(pull=with_pull(changed_files=value)), "MERGE")
+        self.says(snapshot(), "MERGE")
+
+    def test_h7_counts_list_entries_not_names(self):
+        renamed = [{"filename": "merge_check.py", "previous_filename": "test_merge_check.py"}]
+        self.says(snapshot(files=renamed, pull=with_pull(changed_files=1)), "MERGE")
+        self.says(snapshot(files=renamed, pull=with_pull(changed_files=2)), "OWNER: paths")
+
+    def test_h7_changed_files_that_is_not_an_integer_is_bad_input(self):
+        for value in ("2", 2.5, True, [2]):
+            with self.subTest(value=value):
+                self.bad_snapshot(snapshot(pull=with_pull(changed_files=value)))
+
+    def test_h7_paths_is_reported_once_with_files_truncated(self):
+        data = snapshot(pull=with_pull(changed_files=3), files_truncated=True)
+        self.says(data, "OWNER: paths")
+
+    # H8 / V4
+    def test_h8_negative_total_count_is_bad_input(self):
+        runs = with_runs([run(1, "tests"), run(2, "review")], total_count=-1)
+        self.bad_snapshot(snapshot(check_runs=runs))
+
+    def test_h8_negative_changed_files_is_bad_input(self):
+        self.bad_snapshot(snapshot(pull=with_pull(changed_files=-1)))
+
+    # V5
+    def test_v5_codex_p1_is_reported_once(self):
+        summary = comment(
+            2,
+            CODEX,
+            "Codex Review: Didn't find any major issues.\n\nP1 Badge\n\nReviewed commit: `%s`" % H[:10],
+        )
+        data = snapshot(
+            issue_comments=[claude_review(), summary],
+            review_comments=[review_comment(5, "P1 Badge: a real problem")],
+        )
+        self.says(data, "OWNER: codex-p1")
 
 
 class TestOutputFailures(Case):
