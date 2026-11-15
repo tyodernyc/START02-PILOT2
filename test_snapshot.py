@@ -241,6 +241,22 @@ class TestV3(Case):
                 )
 
 
+    def test_v3_spaced_name_is_bad(self):
+        for option in ("--required-checks", "--protected"):
+            for value in ("a, b", " a", "a ", "a,\tb"):
+                out, err, status = run_program(PROGRAM, self.paths() + [option, value])
+                self.assertEqual(out, b"")
+                self.assertEqual(status, 2)
+                self.assertEqual(err, ERROR_PREFIX + option.encode() + b" must not have spaces around a name\n")
+
+    def test_v3_repeated_name_is_bad(self):
+        for option in ("--required-checks", "--protected"):
+            out, err, status = run_program(PROGRAM, self.paths() + [option, "tests,tests,review"])
+            self.assertEqual(out, b"")
+            self.assertEqual(status, 2)
+            self.assertEqual(err, ERROR_PREFIX + option.encode() + b" must not repeat a name\n")
+
+
 class TestV4(Case):
     def files(self, count):
         return [{"filename": "f%d.py" % number} for number in range(count)]

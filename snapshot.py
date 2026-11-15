@@ -154,10 +154,14 @@ def read_allowed(name, path):
 
 
 def read_names(name, value):
-    """A comma-separated list of non-empty names."""
+    """A comma-separated list of distinct, non-empty names with no spaces around them."""
     names = value.split(",")
     if any(item == "" for item in names):
         raise BadInput(name + " must be a comma-separated list of non-empty names")
+    if any(item != item.strip() for item in names):
+        raise BadInput(name + " must not have spaces around a name")
+    if len(set(names)) != len(names):
+        raise BadInput(name + " must not repeat a name")
     return names
 
 
