@@ -75,39 +75,73 @@ def check_path(path):
             raise BadInput("a path has an empty part: " + path)
         if part in (".", ".."):
             raise BadInput("a path has a . or .. part: " + path)
+        # Only letters, digits (any script), dot, underscore and hyphen, so a path
+        # can never carry Markdown syntax or a line break into the bundle.
+        if not all(char.isalnum() or char in "._-" for char in part):
+            raise BadInput("a path has a character that is not allowed: " + path)
 
 
 def read_member(root, real_root, path):
-    """Return the exact bytes of the listed file; raise BadInput naming the path if it is not usable."""
+    """Return the exact bytes of the listed file; raise BadInput naming the path if it is not usable.
+
+    Every folder on the way is opened relative to the one before it, with links
+    refused, so a folder swapped for a link while the program runs cannot lead
+    outside ROOT.
+    """
     problem = "not a regular file inside ROOT: " + path
-    current = root
+    parts = path.split("/")
+    opened = []
     try:
-        for part in path.split("/"):
-            current = os.path.join(current, part)
-            if stat.S_ISLNK(os.lstat(current).st_mode):
-                raise BadInput("a link is not allowed: " + path)
-        if not stat.S_ISREG(os.lstat(current).st_mode):
-            raise BadInput(problem)
-        real = os.path.realpath(current)
-        if os.path.commonpath([real, real_root]) != real_root or real == real_root:
-            raise BadInput(problem)
-        descriptor = os.open(current, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise BadInput(problem)
-            with os.fdopen(descriptor, "rb", closefd=False) as handle:
-                raw = handle.read()
-        finally:
-            os.close(descriptor)
+            current = os.open(real_root, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            raise BadInput("cannot read the file: " + path)
+        opened.append(current)
+        for part in parts[:-1]:
+            try:
+                current = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            except OSError:
+                if is_link(opened[-1], part):
+                    raise BadInput("a link is not allowed: " + path)
+                raise BadInput("cannot read the file: " + path)
+            opened.append(current)
+        last = parts[-1]
+        if is_link(current, last):
+            raise BadInput("a link is not allowed: " + path)
+        try:
+            descriptor = os.open(last, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=current)
+        except OSError:
+            if is_link(current, last):
+                raise BadInput("a link is not allowed: " + path)
+            raise BadInput("cannot read the file: " + path)
+        opened.append(descriptor)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise BadInput(problem)
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            raw = handle.read()
     except BadInput:
         raise
     except (OSError, ValueError):
         raise BadInput("cannot read the file: " + path)
+    finally:
+        for descriptor in opened:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
     try:
         raw.decode("utf-8")
     except ValueError:
         raise BadInput("the file is not UTF-8: " + path)
     return raw
+
+
+def is_link(folder, name):
+    """True when NAME inside the open FOLDER is a symbolic link."""
+    try:
+        return stat.S_ISLNK(os.stat(name, dir_fd=folder, follow_symlinks=False).st_mode)
+    except OSError:
+        return False
 
 
 def fence_for(text):

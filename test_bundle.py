@@ -287,13 +287,22 @@ class TestExtra(Case):
         self.assertIn(("| 2 | empty.txt | 0 | %s |" % sha(b"")).encode("ascii"), text)
         self.assertIn(("| 1 | crlf.txt | %d | %s |" % (len(raw), sha(raw))).encode("ascii"), text)
 
-    def test_extra_a_bar_in_a_path_is_escaped_in_the_table_only(self):
-        self.put("a|b.txt", b"x\n")
-        self.listing("a|b.txt\n")
+    def test_extra_markdown_characters_and_line_breaks_in_a_path_are_bad(self):
+        # Codex P1 on pull request 61: a name must not carry Markdown or a line break into the bundle.
+        for name in ("a|b.txt", "a`b.txt", "a*b.txt", "a#b.txt", "a[b].txt", "a<b>.txt", "a b.txt", "a\rb.txt"):
+            with self.subTest(name=name):
+                self.listing(name + "\n")
+                self.assert_bad(self.bundle(), "a path has a character that is not allowed")
+
+    def test_extra_folder_parts_are_opened_without_following_links(self):
+        # Codex P1 on pull request 61: every folder on the way is opened relative to the last, links refused.
+        self.put("real/inner.txt", b"x\n")
+        os.symlink(os.path.join(self.root, "real"), os.path.join(self.root, "alias"))
+        self.listing("alias/inner.txt\n")
+        self.assert_bad(self.bundle(), "a link is not allowed")
+        os.remove(self.output) if os.path.exists(self.output) else None
+        self.listing("real/inner.txt\n")
         self.assertEqual(self.bundle().returncode, 0)
-        text = self.output_bytes().decode("utf-8")
-        self.assertIn("| 1 | a\\|b.txt | 2 |", text)
-        self.assertIn("\n## 1. a|b.txt\n", text)
 
     def test_extra_unicode_path_and_a_file_that_is_a_byte_order_mark_file(self):
         raw = b"\xef\xbb\xbfbom file\n"
