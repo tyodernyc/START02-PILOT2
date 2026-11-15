@@ -1,4 +1,4 @@
-"""Decide whether the coordinator may merge without the owner (build requests #46, #48, #50 and #52).
+"""Decide whether the coordinator may merge without the owner (build requests #46, #48, #50, #52 and #58).
 
 Usage: python merge_check.py SNAPSHOT_FILE
 
@@ -10,7 +10,9 @@ fixed rules and prints either MERGE or OWNER followed by the reasons the
 owner is needed. It does no network access, merges nothing, posts nothing
 and opens only SNAPSHOT_FILE, for reading.
 
-Input holding NaN, Infinity or -Infinity (not JSON) is bad input.
+Input holding NaN, Infinity or -Infinity (not JSON) is bad input, and so is a
+JSON object that holds the same key twice (at any depth) or a snapshot file that
+starts with a byte order mark (snapshot.py never writes one).
 Exit status: 0 success, 1 the result could not be written, 2 bad input.
 Runs on Python 3.8 or later; standard library only.
 """
@@ -67,15 +69,25 @@ def reject_constant(name):
     raise BadInput("the snapshot file holds " + name + ", which is not JSON")
 
 
+def reject_repeated_key(pairs):
+    """A JSON object with the same key twice is bad input; the last value must not win silently."""
+    result = {}
+    for key, value in pairs:
+        need(key not in result, "the snapshot file holds a repeated key")
+        result[key] = value
+    return result
+
+
 def load(path):
     try:
         with open(path, "rb") as handle:
             raw = handle.read()
     except OSError:
         raise BadInput("cannot read the snapshot file")
+    need(not raw.startswith(b"\xef\xbb\xbf"), "the snapshot file starts with a byte order mark")
     try:
         text = raw.decode("utf-8")
-        data = json.loads(text, parse_constant=reject_constant)
+        data = json.loads(text, parse_constant=reject_constant, object_pairs_hook=reject_repeated_key)
     except (ValueError, RecursionError, MemoryError):
         raise BadInput("the snapshot file is not UTF-8 JSON")
     return data

@@ -4,7 +4,8 @@ Every check V1 to V12 of build request #46 has at least one test method
 named after it, and every amendment A1 to A5 of build request #48 has tests
 in TestAmendments, and every change H1 to H5 of build request #50 has tests
 in TestHardening, and every change H6 to H8 of build request #52 has tests
-in TestFurtherHardening. Each case runs the program as a separate process and compares
+in TestFurtherHardening, and every change G1 and G2 of build request #58 has tests
+in TestInputGaps. Each case runs the program as a separate process and compares
 standard output, standard error and the exit status exactly. The tests named
 test_extra_* cover the rest of the specification (S1 to S5).
 """
@@ -923,6 +924,66 @@ class TestFurtherHardening(Case):
             review_comments=[review_comment(5, "P1 Badge: a real problem")],
         )
         self.says(data, "OWNER: codex-p1")
+
+
+class TestInputGaps(Case):
+    """Build request #58: a repeated key (G1) and a byte order mark (G2) are bad input."""
+
+    def refused(self, content, message):
+        result = self.run_program(self.write(content))
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(result.stderr, ERROR_PREFIX + message.encode() + b"\n")
+        self.assertEqual(result.returncode, 2)
+
+    def test_g1_repeated_key_at_the_top(self):
+        self.refused(b'{"a":1,"a":2}', "the snapshot file holds a repeated key")
+        text = json.dumps(snapshot())[:-1]
+        self.refused((text + ', "files": []}').encode("utf-8"), "the snapshot file holds a repeated key")
+
+    def test_g1_repeated_key_inside_pull(self):
+        text = json.dumps(snapshot()).replace('"pull": {', '"pull": {"state": "closed", ', 1)
+        self.refused(text.encode("utf-8"), "the snapshot file holds a repeated key")
+        text = json.dumps(snapshot()).replace('"head": {', '"head": {"sha": "x", ', 1)
+        self.refused(text.encode("utf-8"), "the snapshot file holds a repeated key")
+
+    def test_g1_repeated_key_deeper_in_other_parts(self):
+        data = snapshot(files=[{"filename": "merge_check.py"}], issue_comments=[claude_review()])
+        text = json.dumps(data)
+        for old, new in (
+            ('"filename": "merge_check.py"', '"filename": "merge_check.py", "filename": "other.py"'),
+            ('"conclusion": "success"', '"conclusion": "success", "conclusion": "failure"'),
+            ('"login": "claude[bot]"', '"login": "claude[bot]", "login": "someone"'),
+        ):
+            with self.subTest(old=old):
+                self.assertIn(old, text)
+                self.refused(text.replace(old, new, 1).encode("utf-8"), "the snapshot file holds a repeated key")
+
+    def test_g1_same_key_written_two_ways_is_repeated(self):
+        self.refused(b'{"a": 1, "\\u0061": 2}', "the snapshot file holds a repeated key")
+
+    def test_g1_same_key_in_different_objects_is_fine(self):
+        data = snapshot(files=[{"filename": "merge_check.py"}, {"filename": "test_merge_check.py"}])
+        self.says(data, "MERGE")
+
+    def test_g1_repeated_key_is_found_before_the_rules_run(self):
+        text = json.dumps(snapshot(pull=with_pull(draft=True)))
+        self.refused(text.replace('"draft": true', '"draft": true, "draft": false', 1).encode("utf-8"),
+                     "the snapshot file holds a repeated key")
+
+    def test_g2_byte_order_mark_is_refused(self):
+        raw = json.dumps(snapshot()).encode("utf-8")
+        self.says(snapshot(), "MERGE")
+        self.refused(b"\xef\xbb\xbf" + raw, "the snapshot file starts with a byte order mark")
+        self.refused(b"\xef\xbb\xbf", "the snapshot file starts with a byte order mark")
+        self.refused(b"\xef\xbb\xbf\xef\xbb\xbf" + raw, "the snapshot file starts with a byte order mark")
+
+    def test_g2_byte_order_mark_inside_the_file_is_not_the_start(self):
+        raw = json.dumps(snapshot()).encode("utf-8")
+        self.refused(raw + b"\xef\xbb\xbf", "the snapshot file is not UTF-8 JSON")
+
+    def test_g2_other_byte_marks_are_still_not_json(self):
+        raw = json.dumps(snapshot()).encode("utf-8")
+        self.refused(b"\xff\xfe" + raw, "the snapshot file is not UTF-8 JSON")
 
 
 class TestOutputFailures(Case):
