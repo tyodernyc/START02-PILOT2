@@ -259,7 +259,7 @@ class TestNumberedChecks(ProgramCase):
             for name, arguments in argument_lists.items():
                 with self.subTest(case=name):
                     self.assert_bad_input(self.run_args(*arguments))
-        latin_1 = json.dumps(pull(title="café"), ensure_ascii=False).encode("latin-1")
+        latin_1 = json.dumps(pull(title="caf\u00e9"), ensure_ascii=False).encode("latin-1")
         contents = {
             "pull file not JSON": (b"not json", BOTH),
             "checks file not JSON": (pull(), b"not json"),
@@ -349,7 +349,7 @@ class TestRestOfSpecification(ProgramCase):
                 self.assert_bad_input(self.run_files(document, {"total_count": 0}))
 
     def test_extra_other_invalid_pull_requests(self):
-        arabic_indic_digits = "٣" * 40
+        arabic_indic_digits = "\u0663" * 40
         invalid = {
             "top level null": b"null",
             "top level a text string": b'"open"',
@@ -484,10 +484,10 @@ class TestRestOfSpecification(ProgramCase):
                 self.assert_bad_input(self.run_args(*arguments))
 
     def test_extra_whitespace_and_non_ascii_content(self):
-        document = pull(title="café ☃")
+        document = pull(title="caf\u00e9 \u2603")
         raw = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
-        self.assertIn("café".encode("utf-8"), raw)
-        named = checks(run("tests"), run("review"), run("prüfung", "failure"))
+        self.assertIn("caf\u00e9".encode("utf-8"), raw)
+        named = checks(run("tests"), run("review"), run("pr\u00fcfung", "failure"))
         spaced = json.dumps(named, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
         self.assert_answer(self.run_files(raw, spaced), "READY")
         escaped = json.dumps(document, ensure_ascii=True).encode("ascii")
