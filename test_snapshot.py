@@ -442,6 +442,13 @@ class TestExtra(Case):
         data = self.snapshot(allowed=text.replace("﻿", ""))
         self.assertEqual(data["allowed"], ["a.py", "src/*.py"])
 
+    def test_extra_allowed_with_byte_order_mark(self):
+        self.assertEqual(self.snapshot(allowed="\ufeffsrc/*.py\nb.py\n")["allowed"], ["src/*.py", "b.py"])
+        self.assertEqual(self.snapshot(allowed="\ufeff# comment\nsrc/*.py\n")["allowed"], ["src/*.py"])
+
+    def test_extra_allowed_bare_carriage_returns(self):
+        self.assertEqual(self.snapshot(allowed="a.py\rsrc/*.py\r")["allowed"], ["a.py", "src/*.py"])
+
     def test_extra_allowed_keeps_order_and_duplicates(self):
         self.assertEqual(self.snapshot(allowed="b\na\nb\n")["allowed"], ["b", "a", "b"])
 

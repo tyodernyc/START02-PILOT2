@@ -142,8 +142,10 @@ def read_checks(name, path):
 
 def read_allowed(name, path):
     text = decode(name, read_bytes(name, path))
+    if text.startswith("\ufeff"):
+        text = text[1:]
     patterns = []
-    for line in text.split("\n"):
+    for line in text.splitlines():
         line = line.strip()
         if line == "" or line.startswith("#"):
             continue
