@@ -318,6 +318,26 @@ class TestV5(Case):
         ):
             self.bad("checks", content, "CHECKS" + checks)
 
+    def test_v5_number_too_large_for_json(self):
+        # 1e999 is a JSON number that Python reads as infinity; it must not come out as Infinity.
+        for name in NAMES[:-1]:
+            for number in ("1e999", "-1e999", "1E+400"):
+                self.bad(
+                    name,
+                    '{"x": %s}' % number if name in ("pull", "checks") else "[%s]" % number,
+                    ARGUMENTS[name] + " holds a number too large for JSON",
+                )
+        self.bad("pull", '{"x": [1, {"y": 1e999}]}', "PULL holds a number too large for JSON")
+
+    def test_v5_large_but_finite_numbers_pass(self):
+        paths = self.paths()
+        write_text(paths[0], '{"x": 1e308, "y": -1e308, "z": 1e-999, "w": 2.5}')
+        out, err, status = run_program(PROGRAM, paths)
+        self.assertEqual((err, status), (b"", 0))
+        self.assertEqual(json.loads(out)["pull"], {"x": 1e308, "y": -1e308, "z": 0.0, "w": 2.5})
+        self.assertNotIn(b"Infinity", out)
+        self.assertNotIn(b"NaN", out)
+
     def test_v5_unreadable_file(self):
         for index, name in enumerate(NAMES):
             paths = self.paths()

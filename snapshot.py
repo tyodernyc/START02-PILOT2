@@ -22,7 +22,8 @@ CHECKS          the JSON object from GET /repos/{o}/{r}/commits/{sha}/check-runs
 ALLOWED         a UTF-8 text file with one allowed path pattern per line;
                 blank lines and lines starting with # are ignored.
 
-Input holding NaN, Infinity or -Infinity (not JSON) is bad input.
+Input holding NaN, Infinity or -Infinity (not JSON), or a number too large for a
+float (such as 1e999), is bad input.
 Exit status: 0 success, 1 the result could not be written, 2 bad input.
 Runs on Python 3.8 or later; standard library only.
 """
@@ -70,9 +71,16 @@ def load_json(name, path):
     def reject_constant(constant):
         raise BadInput(name + " holds " + constant + ", which is not JSON")
 
+    def parse_float(text):
+        """A number such as 1e999 is JSON, but Python reads it as infinity."""
+        value = float(text)
+        if value in (float("inf"), float("-inf")):
+            raise BadInput(name + " holds a number too large for JSON")
+        return value
+
     text = decode(name, read_bytes(name, path))
     try:
-        return json.loads(text, parse_constant=reject_constant)
+        return json.loads(text, parse_constant=reject_constant, parse_float=parse_float)
     except (ValueError, RecursionError, MemoryError):
         raise BadInput(name + " is not UTF-8 JSON")
 
@@ -191,7 +199,7 @@ def build(argv):
     if len(snapshot["files"]) >= TRUNCATED_AT:
         snapshot["files_truncated"] = True
     try:
-        return json.dumps(snapshot)
+        return json.dumps(snapshot, allow_nan=False)
     except (ValueError, RecursionError, MemoryError):
         raise BadInput("the input is too large or too deep")
 
