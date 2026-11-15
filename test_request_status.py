@@ -4,6 +4,10 @@ Every numbered check T1 to T17 of the request has one test method named after
 it. Each case runs the program as a separate process and compares standard
 output, standard error and the exit status exactly. The tests named
 test_extra_* cover the rest of the specification (S1 to S10).
+
+Build request #36 (an interpreter without sys.set_int_max_str_digits) adds
+one test method for each of its checks V1 to V4, and test_extra_* methods for
+the rest of its specification (U1 to U3), in the two classes at the end.
 """
 
 import ast
@@ -753,6 +757,325 @@ class TestRestOfSpecification(ProgramCase):
                  if isinstance(node, ast.Constant) and isinstance(node.value, str)}
         self.assertIn("tests", texts)
         self.assertIn("review", texts)
+
+
+# Build request #36. An older Python is simulated on this one: a fresh
+# interpreter takes sys.set_int_max_str_digits away and then runs the program
+# as the main program, with the program's path and arguments as sys.argv.
+FUNCTION = "set_int_max_str_digits"
+
+WITHOUT_THE_FUNCTION = """\
+import runpy
+import sys
+
+vars(sys).pop("set_int_max_str_digits", None)
+if hasattr(sys, "set_int_max_str_digits"):
+    raise SystemExit("the function could not be taken away")
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+# Runs the program in the same way with the function in place, and writes
+# down every call made to it in the file named first.
+RECORDING_THE_FUNCTION = """\
+import runpy
+import sys
+
+record = sys.argv[1]
+real = sys.set_int_max_str_digits
+calls = []
+
+
+def recorder(*args, **kwargs):
+    calls.append((args, kwargs))
+    return real(*args, **kwargs)
+
+
+sys.set_int_max_str_digits = recorder
+sys.argv = sys.argv[2:]
+try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+finally:
+    with open(record, "w", encoding="ascii") as handle:
+        handle.write(repr(calls))
+"""
+
+# The test methods of this file as build request #36 found it (check V4).
+TESTS_BEFORE_REQUEST_36 = {
+    "TestNumberedChecks": (
+        "test_t01_both_required_checks_succeed",
+        "test_t02_a_required_check_fails",
+        "test_t03_completed_without_success_blocks",
+        "test_t04_a_required_check_has_no_run",
+        "test_t05_review_is_not_completed",
+        "test_t06_tests_fail_while_review_runs",
+        "test_t07_the_highest_id_counts",
+        "test_t08_runs_on_another_commit_do_not_count",
+        "test_t09_names_are_matched_exactly",
+        "test_t10_merged",
+        "test_t11_closed_without_merging",
+        "test_t12_draft",
+        "test_t13_arguments_and_unreadable_files",
+        "test_t14_invalid_pull_request",
+        "test_t15_invalid_checks",
+        "test_t16_validation_comes_before_the_result",
+        "test_t17_standard_output_cannot_be_written",
+    ),
+    "TestRestOfSpecification": (
+        "test_extra_first_rule_that_applies",
+        "test_extra_validation_holds_for_closed_and_draft",
+        "test_extra_other_invalid_pull_requests",
+        "test_extra_other_invalid_checks",
+        "test_extra_id_null_is_invalid",
+        "test_extra_invalid_run_that_would_not_count_anyway",
+        "test_extra_other_unreadable_or_malformed_files",
+        "test_extra_directories_and_empty_names",
+        "test_extra_arguments_are_file_names_not_options",
+        "test_extra_whitespace_and_non_ascii_content",
+        "test_extra_only_the_named_keys_are_read",
+        "test_extra_status_and_conclusion_are_matched_exactly",
+        "test_extra_waiting_and_blocked_combinations",
+        "test_extra_a_re_run_replaces_the_earlier_run",
+        "test_extra_equal_ids_never_depend_on_the_order",
+        "test_extra_id_has_no_upper_bound",
+        "test_extra_many_check_runs",
+        "test_extra_no_text_from_a_file_is_printed",
+        "test_extra_file_names_are_not_printed",
+        "test_extra_runs_with_an_empty_environment",
+        "test_extra_reader_gone",
+        "test_extra_bad_input_is_reported_whatever_standard_output_is",
+        "test_extra_writes_no_file",
+        "test_extra_program_imports_only_what_it_needs",
+        "test_extra_the_required_checks_are_fixed_in_the_code",
+    ),
+}
+
+
+def with_a_long_id(document, digits):
+    """The checks as JSON text, the id of the tests run written as these digits."""
+    marker = 424242
+    listed = [dict(item, id=marker) if item["name"] == "tests" else item
+              for item in document["check_runs"]]
+    text = json.dumps(dict(document, check_runs=listed))
+    assert text.count(str(marker)) == 1
+    return text.replace(str(marker), digits).encode("ascii")
+
+
+class TestWithoutTheFunction(ProgramCase):
+    """Build request #36: the program on a Python that lacks the function."""
+
+    def run_args(self, *args, env=None, stdout=subprocess.PIPE):
+        return subprocess.run(
+            [sys.executable, "-c", WITHOUT_THE_FUNCTION, PROGRAM, *args],
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+
+    def test_v1_ready_without_the_function(self):
+        result = self.run_files(pull(), BOTH)
+        self.assertEqual(result.stdout, b"READY\n")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, b"")
+
+    def test_v2_no_arguments_without_the_function(self):
+        result = self.run_args()
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+        self.assertTrue(result.stderr.startswith(ERROR_PREFIX), result.stderr)
+        self.assertTrue(result.stderr.endswith(b"\n"), result.stderr)
+        self.assertEqual(result.stderr.count(b"\n"), 1, result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_extra_same_as_with_the_function(self):
+        # U2: same results, same exit statuses, same messages.
+        large = 12345678901234567890
+        contents = {
+            "ready": (pull(), BOTH),
+            "waiting": (pull(), checks(run("tests"))),
+            "not completed": (pull(), checks(run("tests"), run("review", None, "in_progress"))),
+            "blocked tests": (pull(), checks(run("tests", "failure"), run("review"))),
+            "blocked review": (pull(), checks(run("tests"), run("review", "cancelled"))),
+            "blocked both": (pull(), checks(run("tests", "failure"), run("review", "failure"))),
+            "merged": (pull(state="closed", merged=True), BOTH),
+            "closed": (pull(state="closed"), BOTH),
+            "draft": (pull(draft=True), BOTH),
+            "large id": (pull(), checks(run("tests"), run("review", "failure", run_id=large),
+                                        run("review", run_id=large - 1))),
+            "pull file not JSON": (b"not json", BOTH),
+            "checks file empty": (pull(), b""),
+            "pull file holds an array": ([pull()], BOTH),
+            "state in capitals": (pull(state="OPEN"), BOTH),
+            "sha too short": (pull(sha=H[:39]), BOTH),
+            "total_count wrong": (pull(), checks(run("tests"), run("review"), total_count=3)),
+            "id of zero": (pull(), checks(run("tests", run_id=0), run("review"))),
+            "id a string": (pull(), checks(run("tests", run_id="7"), run("review"))),
+            "conclusion absent": (pull(), checks(run_without("conclusion"))),
+            "merged beside invalid checks": (pull(state="closed", merged=True), {}),
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            argument_lists = {}
+            for name, (pull_content, checks_content) in contents.items():
+                pull_path = os.path.join(folder, "pull %d.json" % len(argument_lists))
+                checks_path = os.path.join(folder, "checks %d.json" % len(argument_lists))
+                with open(pull_path, "wb") as handle:
+                    handle.write(as_bytes(pull_content))
+                with open(checks_path, "wb") as handle:
+                    handle.write(as_bytes(checks_content))
+                argument_lists[name] = (pull_path, checks_path)
+            pull_path, checks_path = argument_lists["ready"]
+            missing = os.path.join(folder, "no-such-file.json")
+            argument_lists.update({
+                "no arguments": (),
+                "one argument": (pull_path,),
+                "three arguments": (pull_path, checks_path, checks_path),
+                "pull file missing": (missing, checks_path),
+                "checks file missing": (pull_path, missing),
+                "a folder": (folder, checks_path),
+                "an option": ("--help", checks_path),
+            })
+            statuses = set()
+            for name, arguments in argument_lists.items():
+                with self.subTest(case=name):
+                    with_function = ProgramCase.run_args(self, *arguments)
+                    without = self.run_args(*arguments)
+                    self.assertNotIn(b"Traceback", without.stderr)
+                    self.assertEqual(without.stdout, with_function.stdout)
+                    self.assertEqual(without.stderr, with_function.stderr)
+                    self.assertEqual(without.returncode, with_function.returncode)
+                    self.assertIn(without.returncode, (0, 2))
+                    statuses.add(without.returncode)
+            self.assertEqual(statuses, {0, 2})
+
+    def test_extra_every_result_without_the_function(self):
+        cases = {
+            "MERGED": (pull(state="closed", merged=True), BOTH),
+            "CLOSED": (pull(state="closed"), BOTH),
+            "DRAFT": (pull(draft=True), BOTH),
+            "READY": (pull(), BOTH),
+            "WAITING": (pull(), checks()),
+            "BLOCKED tests": (pull(), checks(run("tests", "failure"), run("review"))),
+            "BLOCKED review": (pull(), checks(run("tests"), run("review", "failure"))),
+            "BLOCKED tests review": (pull(), checks(run("tests", "failure"),
+                                                    run("review", "failure"))),
+        }
+        self.assertEqual(sorted(cases), sorted(RESULTS))
+        for expected, (pull_content, checks_content) in cases.items():
+            with self.subTest(expected=expected):
+                self.assert_answer(self.run_files(pull_content, checks_content), expected)
+
+    def test_extra_bad_input_without_the_function(self):
+        cases = {
+            "pull file not JSON": (b"{", BOTH),
+            "invalid pull request": (pull(merged=1), BOTH),
+            "invalid checks": (pull(), checks(run("tests", run_id=True), run("review"))),
+        }
+        for name, (pull_content, checks_content) in cases.items():
+            with self.subTest(case=name):
+                self.assert_bad_input(self.run_files(pull_content, checks_content))
+        with tempfile.TemporaryDirectory() as folder:
+            self.assert_bad_input(self.run_args(os.path.join(folder, "a"), folder))
+
+    def test_extra_a_long_id_never_gives_a_traceback(self):
+        # The function is not emulated (U2). A Python that never had it reads
+        # an integer of any length; this one keeps its own limit once the
+        # function is taken away, so here the file may be refused as bad
+        # input instead. Either way the run ends in one of the fixed ways.
+        result = self.run_files(pull(), with_a_long_id(BOTH, "9" * 5000))
+        self.assertNotIn(b"Traceback", result.stderr)
+        if result.returncode == 0:
+            self.assert_answer(result, "READY")
+        else:
+            self.assert_bad_input(result)
+
+    @unittest.skipUnless(os.name == "posix", "a pipe with no reader is a POSIX case")
+    def test_extra_reader_gone_without_the_function(self):
+        read_end, write_end = os.pipe()
+        os.close(read_end)
+        try:
+            result = self.run_files(pull(), BOTH, stdout=write_end)
+        finally:
+            os.close(write_end)
+        self.assert_output_failed(result)
+
+    def test_extra_the_function_is_really_gone(self):
+        # The simulation itself: the same launcher, run on a program that
+        # reports whether the function is there.
+        with tempfile.TemporaryDirectory() as folder:
+            probe = os.path.join(folder, "probe.py")
+            with open(probe, "w", encoding="ascii") as handle:
+                handle.write(
+                    "import sys\n"
+                    "if __name__ == '__main__':\n"
+                    "    sys.exit(7 if hasattr(sys, 'set_int_max_str_digits') else 3)\n"
+                )
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", WITHOUT_THE_FUNCTION, probe],
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+            )
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (3, b"", b""))
+
+
+class TestWithTheFunction(ProgramCase):
+    """Build request #36: nothing changes where the function exists."""
+
+    def test_v3_a_long_id_with_the_function(self):
+        digits = "9" * 5000
+        document = with_a_long_id(BOTH, digits)
+        self.assertEqual(document.count(digits.encode("ascii")), 1)
+        result = self.run_files(pull(), document)
+        self.assertEqual(result.stdout, b"READY\n")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, b"")
+
+    def test_v4_every_earlier_test_is_still_here(self):
+        # That they still pass is shown by the run itself; this check keeps
+        # any of them from being dropped or renamed unnoticed.
+        self.assertEqual(sum(len(names) for names in TESTS_BEFORE_REQUEST_36.values()), 42)
+        for class_name, names in TESTS_BEFORE_REQUEST_36.items():
+            case = globals()[class_name]
+            self.assertTrue(issubclass(case, ProgramCase))
+            found = set(unittest.defaultTestLoader.getTestCaseNames(case))
+            for name in names:
+                with self.subTest(test=name):
+                    self.assertIn(name, found)
+
+    @unittest.skipUnless(hasattr(sys, FUNCTION), "this Python has no such function")
+    def test_extra_the_function_is_called_exactly_as_before(self):
+        # U1: one call, with 0, whatever the arguments are.
+        with tempfile.TemporaryDirectory() as folder:
+            pull_path = os.path.join(folder, "pull.json")
+            checks_path = os.path.join(folder, "checks.json")
+            with open(pull_path, "wb") as handle:
+                handle.write(as_bytes(pull()))
+            with open(checks_path, "wb") as handle:
+                handle.write(with_a_long_id(BOTH, "9" * 5000))
+            argument_lists = {
+                "two files": ((pull_path, checks_path), (0, b"READY\n")),
+                "no arguments": ((), (2, b"")),
+                "one argument": ((pull_path,), (2, b"")),
+            }
+            for number, (name, (arguments, expected)) in enumerate(argument_lists.items()):
+                with self.subTest(case=name):
+                    record = os.path.join(folder, "record %d.txt" % number)
+                    result = subprocess.run(
+                        [sys.executable, "-c", RECORDING_THE_FUNCTION, record, PROGRAM,
+                         *arguments],
+                        capture_output=True,
+                        stdin=subprocess.DEVNULL,
+                    )
+                    self.assertNotIn(b"Traceback", result.stderr)
+                    self.assertEqual((result.returncode, result.stdout), expected)
+                    with open(record, encoding="ascii") as handle:
+                        self.assertEqual(handle.read(), "[((0,), {})]")
+
+    @unittest.skipUnless(hasattr(sys, FUNCTION), "this Python has no such function")
+    def test_extra_the_limit_is_still_lifted_whatever_the_environment_says(self):
+        environment = dict(os.environ, PYTHONINTMAXSTRDIGITS="640")
+        result = self.run_files(pull(), with_a_long_id(BOTH, "9" * 5000), env=environment)
+        self.assert_answer(result, "READY")
 
 
 if __name__ == "__main__":
