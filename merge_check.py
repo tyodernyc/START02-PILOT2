@@ -97,7 +97,12 @@ def read_pull(value):
         pull["body"] is None or isinstance(pull["body"], str),
         "the pull request body must be a string or null",
     )
-    return pull["state"], pull["draft"], sha, pull["body"]
+    state = pull.get("mergeable_state")
+    need(
+        state is None or isinstance(state, str),
+        "the pull request mergeable_state must be a string or null",
+    )
+    return pull["state"], pull["draft"], sha, pull["body"], state
 
 
 def read_files(value):
@@ -115,7 +120,10 @@ def read_files(value):
 
 
 def read_check_runs(value):
+    """Return the runs and whether the list is incomplete (total_count is larger)."""
     entry = need_dict(value, "check_runs must be an object")
+    total = entry.get("total_count")
+    need(total is None or is_int(total), "the check run total_count must be an integer or null")
     runs = []
     for run in need_list(entry.get("check_runs"), "check_runs must hold a list"):
         need_dict(run, "a check run must be an object")
@@ -129,7 +137,7 @@ def read_check_runs(value):
             "a check run conclusion must be a string or null",
         )
         runs.append((run["id"], run["name"], run["status"], conclusion))
-    return runs
+    return runs, total is not None and total > len(runs)
 
 
 def read_comments(value, kind, extra=None):
@@ -160,9 +168,17 @@ def read_allowed(data):
 
 
 def read_protected(data):
-    if "protected" not in data:
-        return list(DEFAULT_PROTECTED)
-    return need_strings(data["protected"], "protected must be a list of strings")
+    """The default prefixes always apply; a listed `protected` only adds to them."""
+    extra = []
+    if "protected" in data:
+        extra = need_strings(data["protected"], "protected must be a list of strings")
+    return list(DEFAULT_PROTECTED) + extra
+
+
+def read_truncated(data):
+    value = data.get("files_truncated")
+    need(value is None or isinstance(value, bool), "files_truncated must be a boolean or null")
+    return value is True
 
 
 def read_required(data):
@@ -180,16 +196,20 @@ def read_snapshot(data):
     need_dict(data, "the snapshot must be a JSON object")
     for key in ("pull", "files", "check_runs", "issue_comments", "review_comments"):
         need(key in data, "the snapshot lacks a required key")
-    state, draft, sha, body = read_pull(data["pull"])
+    state, draft, sha, body, mergeable = read_pull(data["pull"])
     names, count = read_files(data["files"])
+    runs, runs_incomplete = read_check_runs(data["check_runs"])
     return {
         "state": state,
+        "mergeable": mergeable,
         "draft": draft,
         "sha": sha,
         "body": body,
         "files": names,
         "file_count": count,
-        "runs": read_check_runs(data["check_runs"]),
+        "runs": runs,
+        "runs_incomplete": runs_incomplete,
+        "files_truncated": read_truncated(data),
         "issue_comments": read_comments(data["issue_comments"], "issue_comments"),
         "review_comments": read_comments(data["review_comments"], "review_comments", "commit_id"),
         "allowed": read_allowed(data),
@@ -216,7 +236,13 @@ def rule_not_open(snap):
     return snap["state"] != "open" or snap["draft"]
 
 
+def rule_not_mergeable(snap):
+    return snap["mergeable"] is not None and snap["mergeable"] != "clean"
+
+
 def rule_checks(snap):
+    if snap["runs_incomplete"]:
+        return True  # the list of check runs is cut short
     for name in snap["required"]:
         run = counted_run(snap["runs"], name)
         if run is None or run[2] != "completed" or run[3] != "success":
@@ -246,7 +272,8 @@ def rule_claude_review(snap):
     return decisive is None or len(decisive[1]) < 3 or decisive[1][2] != "VERDICT: PASS"
 
 
-def rule_codex_review(snap):
+def codex_summary(snap):
+    """The Codex comment that decides codex-review: the latest one for the head, or None."""
     sha = snap["sha"]
     mine = []
     for comment in snap["issue_comments"]:
@@ -254,11 +281,18 @@ def rule_codex_review(snap):
             continue
         if any(sha.startswith(found) for found in REVIEWED_RE.findall(comment[2])):
             mine.append(comment)
-    decisive = latest(mine)
+    return latest(mine)
+
+
+def rule_codex_review(snap):
+    decisive = codex_summary(snap)
     return decisive is None or not any(phrase in decisive[2] for phrase in CODEX_CLEAN)
 
 
 def rule_codex_p1(snap):
+    decisive = codex_summary(snap)
+    if decisive is not None and any(badge in decisive[2] for badge in CODEX_BADGES):
+        return True
     for comment in snap["review_comments"]:
         if comment[1] == CODEX and comment[3] == snap["sha"]:
             if any(badge in comment[2] for badge in CODEX_BADGES):
@@ -267,6 +301,8 @@ def rule_codex_p1(snap):
 
 
 def rule_paths(snap):
+    if snap["files_truncated"]:
+        return True  # the list of changed files is cut short
     if snap["file_count"] == 0:
         return True  # nothing changed, so there is nothing to merge
     for name in snap["files"]:
@@ -290,16 +326,35 @@ def is_heading(line):
     return len(line) >= 2 and line[0] == "#" and line[1] in "# "
 
 
+def fenced_lines(lines):
+    """For each line, True if it is a fence line or lies inside a fenced code block.
+
+    A fence line starts with three backticks; it opens a block, and the next
+    fence line closes it. A block that is never closed runs to the end.
+    """
+    flags = []
+    inside = False
+    for line in lines:
+        if line.startswith("```"):
+            flags.append(True)
+            inside = not inside
+        else:
+            flags.append(inside)
+    return flags
+
+
 def rule_open_question(snap):
     if snap["body"] is None:
         return False
     lines = split_lines(snap["body"])
+    fenced = fenced_lines(lines)
     for index, line in enumerate(lines):
-        if not line.lstrip("# ").lower().startswith("open question"):
+        if fenced[index] or not line.lstrip("# ").lower().startswith("open question"):
             continue
         following = []
-        for later in lines[index + 1:]:
-            if is_heading(later):
+        for position in range(index + 1, len(lines)):
+            later = lines[position]
+            if not fenced[position] and is_heading(later):
                 break
             following.append(later)
         text = "\n".join(following).strip()
@@ -313,6 +368,7 @@ def rule_open_question(snap):
 
 RULES = (
     ("not-open", rule_not_open),
+    ("not-mergeable", rule_not_mergeable),
     ("checks", rule_checks),
     ("claude-review", rule_claude_review),
     ("codex-review", rule_codex_review),
