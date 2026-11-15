@@ -609,5 +609,100 @@ class TestExtra(Case):
         self.assertEqual(len(opens), 1)
 
 
+
+def with_extra(data, raw_value):
+    """The JSON text of data with an extra ignored field holding raw_value."""
+    return (json.dumps(data)[:-1] + ',"extra":' + raw_value + "}").encode("utf-8")
+
+
+class TestHardening(Case):
+    """Build request #44: F1 (non-JSON constants), F2 (large integers) and
+    F3 (unwritable standard error or output)."""
+
+    def test_f1_non_json_constants_are_bad_input(self):
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                self.bad(self.write(with_extra(snapshot(), constant)))
+
+    def test_f1_constant_inside_a_nested_ignored_field(self):
+        raw = json.dumps(snapshot())[:-1] + ',"extra":{"a":[1,{"b":NaN}]}}'
+        self.bad(self.write(raw.encode("utf-8")))
+
+    def test_f1_constant_in_a_used_field(self):
+        raw = (
+            '{"issues":[],"pulls":[],"check_runs":{},"comments":{},'
+            '"required_checks":[NaN]}'
+        )
+        self.bad(self.write(raw.encode("utf-8")))
+
+    def test_f1_names_that_merely_look_like_constants_are_text(self):
+        data = snapshot(extra=["NaN", "Infinity", "-Infinity"])
+        self.ok(data, ["NOTHING WAITING"])
+
+    def test_f2_five_thousand_digit_integer_in_an_ignored_field(self):
+        digits = "1" + "0" * 4999
+        self.assertEqual(len(digits), 5000)
+        for raw in (digits, "-" + digits):
+            with self.subTest(raw=raw[:3]):
+                data = snapshot(
+                    issues=[issue(7)],
+                    pulls=[pull(5)],
+                    check_runs={H: good_runs()},
+                )
+                result = self.run_program(self.write(with_extra(data, raw)))
+                plain = self.run_program(self.write(data))
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stderr, b"")
+                self.assertEqual(result.stdout, plain.stdout)
+                self.assertEqual(plain.returncode, 0)
+                self.assertNotEqual(result.stdout, b"")
+
+    def test_f3_unwritable_standard_error_still_gives_status_2(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full not available")
+        with open("/dev/full", "wb") as full:
+            result = subprocess.run(
+                [sys.executable, PROGRAM],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=full,
+                cwd=self.folder,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+
+    def test_f3_unwritable_standard_error_with_bad_snapshot(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full not available")
+        path = self.write(with_extra(snapshot(), "NaN"))
+        with open("/dev/full", "wb") as full:
+            result = subprocess.run(
+                [sys.executable, PROGRAM, path],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=full,
+                cwd=self.folder,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+
+    def test_f3_unwritable_standard_output_gives_status_1(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full not available")
+        path = self.write(snapshot())
+        with open("/dev/full", "wb") as full:
+            result = subprocess.run(
+                [sys.executable, PROGRAM, path],
+                stdin=subprocess.DEVNULL,
+                stdout=full,
+                stderr=subprocess.PIPE,
+                cwd=self.folder,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertEqual(result.stderr.count(b"\n"), 1)
+        self.assertTrue(result.stderr.startswith(ERROR_PREFIX))
+
+
 if __name__ == "__main__":
     unittest.main()

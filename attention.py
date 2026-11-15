@@ -7,6 +7,7 @@ open issues, open pull requests, check runs and comments, as the caller
 fetched them with `gh api`. The program does no network access and opens
 only SNAPSHOT_FILE, for reading. It prints a short fixed-format list.
 
+Input holding NaN, Infinity or -Infinity (not JSON) is bad input.
 Exit status: 0 success, 1 the result could not be written, 2 bad input.
 Runs on Python 3.8 or later; standard library only.
 """
@@ -47,6 +48,11 @@ def need_list(value, message):
     return value
 
 
+def reject_constant(name):
+    """NaN, Infinity and -Infinity are not JSON; Python's decoder takes them."""
+    raise BadInput("the snapshot file holds " + name + ", which is not JSON")
+
+
 def load(path):
     try:
         with open(path, "rb") as handle:
@@ -55,7 +61,7 @@ def load(path):
         raise BadInput("cannot read the snapshot file")
     try:
         text = raw.decode("utf-8")
-        data = json.loads(text)
+        data = json.loads(text, parse_constant=reject_constant)
     except (ValueError, RecursionError, MemoryError):
         raise BadInput("the snapshot file is not UTF-8 JSON")
     return data
@@ -230,10 +236,23 @@ def build(snapshot):
     return lines or ["NOTHING WAITING"]
 
 
+def write_fd(descriptor, text, errors="replace"):
+    """Write the text to a file descriptor with os.write.
+
+    Nothing is left in a buffer, so Python's shutdown flush cannot fail after
+    the exit status has been decided (it would turn the status into 120).
+    """
+    view = memoryview(text.encode("utf-8", errors))
+    while len(view):
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("nothing was written")
+        view = view[written:]
+
+
 def fail(code, message):
     try:
-        sys.stderr.write(PREFIX + message + "\n")
-        sys.stderr.flush()
+        write_fd(2, PREFIX + message + "\n")
     except Exception:
         pass
     return code
@@ -242,20 +261,19 @@ def fail(code, message):
 def write_result(lines):
     """Write the lines to standard output; return True on success."""
     try:
-        data = "".join(line + "\n" for line in lines).encode("utf-8")
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
+        # Strict: text that cannot be encoded fails the whole write, and
+        # nothing at all reaches standard output.
+        write_fd(1, "".join(line + "\n" for line in lines), "strict")
         return True
     except Exception:
-        try:
-            null = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(null, 1)
-        except Exception:
-            pass
         return False
 
 
 def main(argv):
+    # A valid JSON integer may have any number of digits, so the interpreter's
+    # cap on the length of an integer's text is lifted where it exists.
+    if hasattr(sys, "set_int_max_str_digits"):
+        sys.set_int_max_str_digits(0)
     if len(argv) != 2:
         return fail(2, "usage: python attention.py SNAPSHOT_FILE")
     try:
