@@ -1,7 +1,8 @@
-"""Tests for snapshot.py (build request #54).
+"""Tests for snapshot.py (build requests #54 and #58).
 
 Every check V1 to V6 of build request #54 has at least one test method named
-after it. Each case runs the program as a separate process and compares
+after it, and the checks V1 to V4 of build request #58 have tests in TestInputGaps.
+Each case runs the program as a separate process and compares
 standard output, standard error and the exit status. The tests named
 test_extra_* cover the rest of the specification.
 """
@@ -387,6 +388,146 @@ class TestV5(Case):
         write_text(paths[0], "[" * 100000 + "]" * 100000)
         out, err, status = run_program(PROGRAM, paths)
         self.assertEqual((out, err, status), (b"", ERROR_PREFIX + b"PULL is not UTF-8 JSON\n", 2))
+
+
+class TestInputGaps(Case):
+    """Build request #58: repeated keys (G1), byte order mark (G2), exact numbers (G3)."""
+
+    def bad_bytes(self, name, content, message):
+        paths = self.paths()
+        with open(paths[NAMES.index(name)], "wb") as handle:
+            handle.write(content)
+        out, err, status = run_program(PROGRAM, paths)
+        self.assertEqual((out, err, status), (b"", ERROR_PREFIX + message.encode() + b"\n", 2))
+
+    def build_bytes(self, name, content, extra=None):
+        paths = self.paths()
+        with open(paths[NAMES.index(name)], "wb") as handle:
+            handle.write(content)
+        return run_program(PROGRAM, paths + (extra or []))
+
+    def test_v1_repeated_key_in_each_json_input(self):
+        for name in NAMES[:-1]:
+            with self.subTest(name=name):
+                self.bad_bytes(name, b'{"a":1,"a":2}', ARGUMENTS[name] + " holds a repeated key")
+
+    def test_v1_repeated_key_at_depth(self):
+        for content in (
+            b'{"x": {"y": [1, {"k": 1, "z": 0, "k": 2}]}}',
+            b'{"x": [{"a": 1, "a": 1}]}',
+            b'{"a": 1, "b": {"c": {"d": 1, "d": null}}}',
+        ):
+            with self.subTest(content=content):
+                self.bad_bytes("pull", content, "PULL holds a repeated key")
+        self.bad_bytes("files", b'[[{"filename": "a", "filename": "b"}]]', "FILES holds a repeated key")
+        self.bad_bytes(
+            "checks",
+            b'{"check_runs": [{"id": 1, "id": 1}]}',
+            "CHECKS holds a repeated key",
+        )
+
+    def test_v1_same_key_written_two_ways_is_repeated(self):
+        self.bad_bytes("pull", b'{"a": 1, "\\u0061": 2}', "PULL holds a repeated key")
+
+    def test_v1_same_key_in_different_objects_is_fine(self):
+        out, err, status = self.build_bytes("pull", b'{"a": {"k": 1}, "b": {"k": 2}, "c": [{"k": 3}, {"k": 4}]}')
+        self.assertEqual((err, status), (b"", 0))
+        self.assertEqual(json.loads(out)["pull"], {"a": {"k": 1}, "b": {"k": 2}, "c": [{"k": 3}, {"k": 4}]})
+
+    def test_v1_repeated_key_in_snapshot_pull_reaches_merge_check(self):
+        text = json.dumps(self.snapshot_for_merge_check())[:-1]
+        path = os.path.join(self.dir, "repeat.json")
+        write_text(path, text.replace('"pull": {', '"pull": {"number": 1, ', 1) + "}")
+        out, err, status = run_program(MERGE_CHECK, [path])
+        self.assertEqual((out, err, status), (b"", b"merge_check: the snapshot file holds a repeated key\n", 2))
+
+    def snapshot_for_merge_check(self):
+        return self.snapshot()
+
+    def test_v2_byte_order_mark_gives_the_same_snapshot(self):
+        for name in NAMES[:-1]:
+            with self.subTest(name=name):
+                paths = self.paths()
+                plain, err, status = run_program(PROGRAM, paths)
+                self.assertEqual((err, status), (b"", 0))
+                with open(paths[NAMES.index(name)], "rb") as handle:
+                    raw = handle.read()
+                with open(paths[NAMES.index(name)], "wb") as handle:
+                    handle.write(b"\xef\xbb\xbf" + raw)
+                marked, err, status = run_program(PROGRAM, paths)
+                self.assertEqual((err, status), (b"", 0))
+                self.assertEqual(marked, plain)
+
+    def test_v2_byte_order_mark_on_every_json_file_at_once(self):
+        paths = self.paths()
+        plain, _, _ = run_program(PROGRAM, paths)
+        for path in paths[:-1]:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            with open(path, "wb") as handle:
+                handle.write(b"\xef\xbb\xbf" + raw)
+        marked, err, status = run_program(PROGRAM, paths)
+        self.assertEqual((err, status), (b"", 0))
+        self.assertEqual(marked, plain)
+
+    def test_v2_only_one_byte_order_mark_is_read_past(self):
+        self.bad_bytes("pull", b"\xef\xbb\xbf\xef\xbb\xbf{}", "PULL is not UTF-8 JSON")
+        self.bad_bytes("pull", b"\xef\xbb\xbf", "PULL is not UTF-8 JSON")
+
+    def test_v2_byte_order_mark_does_not_hide_other_faults(self):
+        self.bad_bytes("pull", b'\xef\xbb\xbf{"a":1,"a":2}', "PULL holds a repeated key")
+        self.bad_bytes("files", b"\xef\xbb\xbf[1]", "FILES must be a JSON array of objects or an array of such arrays")
+
+    def test_v3_long_number_keeps_its_exact_text(self):
+        out, err, status = self.build_bytes("pull", b'{"x": 12345678901234567890.123}')
+        self.assertEqual((err, status), (b"", 0))
+        self.assertTrue(out.startswith(b'{"pull": {"x": 12345678901234567890.123}, '), out)
+
+    def test_v3_exact_text_of_other_numbers(self):
+        numbers = ("1.0", "1.50", "-0.0", "1e5", "1E+5", "2.5e-3", "0.1000000000000000055511151231257827", "1e-999", "1e308")
+        for number in numbers:
+            with self.subTest(number=number):
+                out, err, status = self.build_bytes("pull", ('{"x": %s}' % number).encode())
+                self.assertEqual((err, status), (b"", 0))
+                self.assertTrue(out.startswith(('{"pull": {"x": %s}, ' % number).encode()), out)
+
+    def test_v3_numbers_in_lists_and_every_input(self):
+        for name in NAMES[:-1]:
+            with self.subTest(name=name):
+                content = b'{"x": [1.0, {"y": 2e2}, "1.0", 3]}' if name in ("pull", "checks") else b'[{"x": [1.0, 2e2]}]'
+                if name == "checks":
+                    content = b'{"check_runs": [{"x": [1.0, 2e2]}]}'
+                out, err, status = self.build_bytes(name, content)
+                self.assertEqual((err, status), (b"", 0))
+                self.assertTrue(b"1.0" in out and b"2e2" in out, out)
+
+    def test_v3_output_is_the_same_as_json_dumps_for_the_rest(self):
+        pull = {"a": [1, True, False, None, "x\u00e9\n\"", {}, [], {"k": [[]]}], "b": 0, "c": -7, "d": "\ud800"}
+        paths = self.paths()
+        write_text(paths[0], json.dumps(pull))
+        out, err, status = run_program(PROGRAM, paths)
+        self.assertEqual((err, status), (b"", 0))
+        expected = '{"pull": %s, ' % json.dumps(pull)
+        self.assertTrue(out.decode().startswith(expected), out)
+
+    def test_v3_output_still_one_valid_json_line(self):
+        out, err, status = self.build_bytes("pull", b'{"x": 12345678901234567890.123, "y": 1e5}')
+        self.assertEqual((err, status), (b"", 0))
+        self.assertEqual(out.count(b"\n"), 1)
+        self.assertEqual(json.loads(out)["pull"], {"x": 12345678901234567890.123, "y": 1e5})
+
+    def test_v3_too_large_number_is_still_refused(self):
+        self.bad_bytes("pull", b'{"x": 1e999}', "PULL holds a number too large for JSON")
+
+    def test_v3_deep_but_readable_input_still_builds(self):
+        depth = 400
+        out, err, status = self.build_bytes("pull", b'{"x": ' + b"[" * depth + b"1.5" + b"]" * depth + b"}")
+        self.assertEqual((err, status), (b"", 0))
+        self.assertIn(b"1.5", out)
+
+    def test_v4_existing_files_are_still_there(self):
+        for name in ("snapshot.py", "test_snapshot.py", "merge_check.py", "test_merge_check.py"):
+            self.assertTrue(os.path.exists(os.path.join(HERE, name)))
 
 
 class TestV6(unittest.TestCase):

@@ -1,4 +1,4 @@
-"""Build the one JSON snapshot that merge_check.py reads (build request #54).
+"""Build the one JSON snapshot that merge_check.py reads (build requests #54 and #58).
 
 Usage: python snapshot.py PULL FILES CHECKS ISSUE_COMMENTS REVIEW_COMMENTS ALLOWED
            [--required-checks NAME,NAME] [--protected PREFIX,PREFIX]
@@ -23,7 +23,10 @@ ALLOWED         a UTF-8 text file with one allowed path pattern per line;
                 blank lines and lines starting with # are ignored.
 
 Input holding NaN, Infinity or -Infinity (not JSON), or a number too large for a
-float (such as 1e999), is bad input.
+float (such as 1e999), is bad input, and so is a JSON object that holds the same
+key twice (at any depth). A JSON input file may start with a UTF-8 byte order
+mark; it is read as if the mark were absent. A number with a fraction or an
+exponent is written out with the exact text it had in the input.
 Exit status: 0 success, 1 the result could not be written, 2 bad input.
 Runs on Python 3.8 or later; standard library only.
 """
@@ -65,22 +68,100 @@ def decode(name, raw):
         raise BadInput(name + " is not UTF-8")
 
 
+class Number:
+    """A JSON number with a fraction or an exponent, kept as its exact input text."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text):
+        self.text = text
+
+
+class Literal:
+    """A piece of output text that is written as it is."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text):
+        self.text = text
+
+
+def encode(value):
+    """Write the value as JSON text, the way json.dumps does, but with each Number as its text.
+
+    It keeps its own list of pending pieces instead of calling itself, so a deeply
+    nested value cannot use up the interpreter's stack here.
+    """
+    out = []
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, (Literal, Number)):
+            out.append(item.text)
+        elif item is None:
+            out.append("null")
+        elif item is True:
+            out.append("true")
+        elif item is False:
+            out.append("false")
+        elif isinstance(item, int):
+            out.append(int.__repr__(item))
+        elif isinstance(item, str):
+            out.append(json.dumps(item))
+        elif isinstance(item, list):
+            out.append("[")
+            pending.append(Literal("]"))
+            for index in range(len(item) - 1, -1, -1):
+                pending.append(item[index])
+                if index > 0:
+                    pending.append(Literal(", "))
+        else:
+            out.append("{")
+            pending.append(Literal("}"))
+            pairs = list(item.items())
+            for index in range(len(pairs) - 1, -1, -1):
+                pending.append(pairs[index][1])
+                pending.append(Literal(json.dumps(pairs[index][0]) + ": "))
+                if index > 0:
+                    pending.append(Literal(", "))
+    return "".join(out)
+
+
 def load_json(name, path):
-    """Read the file as UTF-8 JSON; NaN, Infinity and -Infinity are refused."""
+    """Read the file as UTF-8 JSON, with or without a byte order mark.
+
+    NaN, Infinity and -Infinity, a number too large for a float and an object
+    that holds the same key twice are refused. A number with a fraction or an
+    exponent comes back as a Number that holds its exact text.
+    """
 
     def reject_constant(constant):
         raise BadInput(name + " holds " + constant + ", which is not JSON")
 
     def parse_float(text):
         """A number such as 1e999 is JSON, but Python reads it as infinity."""
-        value = float(text)
-        if value in (float("inf"), float("-inf")):
+        if float(text) in (float("inf"), float("-inf")):
             raise BadInput(name + " holds a number too large for JSON")
-        return value
+        return Number(text)
+
+    def make_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise BadInput(name + " holds a repeated key")
+            result[key] = value
+        return result
 
     text = decode(name, read_bytes(name, path))
+    if text.startswith("\ufeff"):
+        text = text[1:]
     try:
-        return json.loads(text, parse_constant=reject_constant, parse_float=parse_float)
+        return json.loads(
+            text,
+            parse_constant=reject_constant,
+            parse_float=parse_float,
+            object_pairs_hook=make_object,
+        )
     except (ValueError, RecursionError, MemoryError):
         raise BadInput(name + " is not UTF-8 JSON")
 
@@ -205,7 +286,7 @@ def build(argv):
     if len(snapshot["files"]) >= TRUNCATED_AT:
         snapshot["files_truncated"] = True
     try:
-        return json.dumps(snapshot, allow_nan=False)
+        return encode(snapshot)
     except (ValueError, RecursionError, MemoryError):
         raise BadInput("the input is too large or too deep")
 
