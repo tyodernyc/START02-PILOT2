@@ -291,6 +291,24 @@ class ExtraTests(Case):
                 stderr=subprocess.PIPE)
         self.assertEqual(done.returncode, 1)
         self.assertNotIn(b"Traceback", done.stderr)
+        self.assertNotIn(b"Exception ignored", done.stderr)
+
+    def test_extra_closed_output_exits_1(self):
+        pull_path = self.write("pull.json", pull())
+        comments_path = self.write(
+            "comments.json", [comment(1, review_body(["x"]))])
+        done = subprocess.run(
+            [sys.executable, "-c",
+             "import os, sys\n"
+             "os.close(1)\n"
+             "sys.argv = ['draft_followup.py'] + sys.argv[1:]\n"
+             "import runpy\n"
+             "runpy.run_path(%r, run_name='__main__')" % PROGRAM,
+             pull_path, comments_path],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE)
+        self.assertEqual(done.returncode, 1)
+        self.assertNotIn(b"Traceback", done.stderr)
 
     def test_extra_inputs_not_modified(self):
         pull_path = self.write("pull.json", pull())

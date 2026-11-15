@@ -14,6 +14,7 @@ Runs on Python 3.8 or later; standard library only.
 """
 
 import json
+import os
 import re
 import sys
 
@@ -164,11 +165,13 @@ def build_output(number, sha, comments):
 
 
 def write_stdout(text):
-    # Text that cannot be encoded (a lone surrogate from a JSON escape) is
-    # written with a replacement character instead of failing.
-    data = text.encode("utf-8", "replace")
-    sys.stdout.buffer.write(data)
-    sys.stdout.buffer.flush()
+    # Written straight to file descriptor 1, so no buffered data is left in
+    # sys.stdout when a write fails (a failed flush at interpreter exit would
+    # otherwise turn the exit status into 120). Text that cannot be encoded
+    # (a lone surrogate from a JSON escape) gets a replacement character.
+    view = memoryview(text.encode("utf-8", "replace"))
+    while len(view):
+        view = view[os.write(1, view):]
 
 
 def main(argv):
