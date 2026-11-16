@@ -5,7 +5,8 @@ named after it, and every amendment A1 to A5 of build request #48 has tests
 in TestAmendments, and every change H1 to H5 of build request #50 has tests
 in TestHardening, and every change H6 to H8 of build request #52 has tests
 in TestFurtherHardening, and every change G1 and G2 of build request #58 has tests
-in TestInputGaps. Each case runs the program as a separate process and compares
+in TestInputGaps, and every change J1 to J6 of build request #63 has tests
+in TestAuditGaps. Each case runs the program as a separate process and compares
 standard output, standard error and the exit status exactly. The tests named
 test_extra_* cover the rest of the specification (S1 to S5).
 """
@@ -61,6 +62,7 @@ def snapshot(**parts):
             "number": 7,
             "state": "open",
             "draft": False,
+            "mergeable_state": "clean",
             "head": {"sha": H},
             "body": "## Summary\nOne thing.\n\n## Open questions\nnone\n",
         },
@@ -146,7 +148,7 @@ class TestRules(Case):
         self.says(snapshot(check_runs={"check_runs": [run(1, "tests")]}), "OWNER: checks")
         custom = {"check_runs": [run(1, "ci", conclusion="failure"), run(2, "review")]}
         self.says(snapshot(check_runs=custom, required_checks=["ci", "review"]), "OWNER: checks")
-        fine = {"check_runs": [run(1, "ci"), run(2, "review")]}
+        fine = {"check_runs": [run(1, "tests"), run(2, "ci"), run(3, "review")]}
         self.says(snapshot(check_runs=fine, required_checks=["ci", "review"]), "MERGE")
 
     def test_v4_claude_review_for_an_older_head(self):
@@ -191,38 +193,46 @@ class TestRules(Case):
         data = snapshot(files=files("merge_check.py", "other.py"))
         self.says(data, "OWNER: paths")
 
-    def test_v7_star_crosses_slashes(self):
+    def test_v7_star_stays_inside_one_folder(self):
+        # Superseded by build request #63 (J6): `*` no longer crosses slashes.
         data = snapshot(
             files=files("apps/backend/src/a/b/c.ts", "apps/backend/src/x.ts"),
             allowed=["apps/backend/src/*"],
+        )
+        self.says(data, "OWNER: paths")
+        data = snapshot(files=files("apps/backend/src/x.ts"), allowed=["apps/backend/src/*"])
+        self.says(data, "MERGE")
+        data = snapshot(
+            files=files("apps/backend/src/a/b/c.ts", "apps/backend/src/x.ts"),
+            allowed=["apps/backend/src/**"],
         )
         self.says(data, "MERGE")
         outside = snapshot(files=files("apps/frontend/src/x.ts"), allowed=["apps/backend/src/*"])
         self.says(outside, "OWNER: paths")
 
     def test_v8_workflow_file_is_protected(self):
-        data = snapshot(files=files(".github/workflows/ci.yml"), allowed=[".github/*"])
+        data = snapshot(files=files(".github/workflows/ci.yml"), allowed=[".github/**"])
         self.says(data, "OWNER: protected")
         both = snapshot(files=files(".github/workflows/ci.yml"))
         self.says(both, "OWNER: paths, protected")
 
     def test_v8_docs_and_exact_name_prefixes(self):
-        self.says(snapshot(files=files("docs/x.md"), allowed=["docs/*"]), "OWNER: protected")
-        self.says(snapshot(files=files("AGENTS.md"), allowed=["*"]), "OWNER: protected")
-        self.says(snapshot(files=files("CLAUDE.md"), allowed=["*"]), "OWNER: protected")
-        self.says(snapshot(files=files("apps/backend/prisma/schema.prisma"), allowed=["*"]), "OWNER: protected")
+        self.says(snapshot(files=files("docs/x.md"), allowed=["docs/**"]), "OWNER: protected")
+        self.says(snapshot(files=files("AGENTS.md"), allowed=["**"]), "OWNER: protected")
+        self.says(snapshot(files=files("CLAUDE.md"), allowed=["**"]), "OWNER: protected")
+        self.says(snapshot(files=files("apps/backend/prisma/schema.prisma"), allowed=["**"]), "OWNER: protected")
         # A prefix without a slash matches only that exact name.
-        self.says(snapshot(files=files("AGENTS.md.bak", "docsy/x.md"), allowed=["*"]), "MERGE")
+        self.says(snapshot(files=files("AGENTS.md.bak", "docsy/x.md"), allowed=["**"]), "MERGE")
 
     def test_v8_custom_protected_list_adds_to_the_default(self):
         # Superseded by build request #50 (H1): a custom list only adds prefixes.
-        data = snapshot(files=files("docs/x.md"), allowed=["docs/*"], protected=["secret/"])
+        data = snapshot(files=files("docs/x.md"), allowed=["docs/**"], protected=["secret/"])
         self.says(data, "OWNER: protected")
-        data = snapshot(files=files("secret/key.txt"), allowed=["*"], protected=["secret/"])
+        data = snapshot(files=files("secret/key.txt"), allowed=["**"], protected=["secret/"])
         self.says(data, "OWNER: protected")
-        data = snapshot(files=files("secret"), allowed=["*"], protected=["secret"])
+        data = snapshot(files=files("secret"), allowed=["**"], protected=["secret"])
         self.says(data, "OWNER: protected")
-        data = snapshot(files=files(".github/ci.yml"), allowed=["*"], protected=[])
+        data = snapshot(files=files(".github/ci.yml"), allowed=["**"], protected=[])
         self.says(data, "OWNER: protected")
 
     def test_v9_open_questions_none(self):
@@ -343,7 +353,7 @@ class TestExtra(Case):
         self.says(snapshot(issue_comments=[comment(1, CLAUDE, body), codex_review()]), "OWNER: claude-review")
 
     def test_extra_codex_accepts_stars_spaces_and_the_curly_apostrophe(self):
-        body = "**Reviewed commit:** `%s`\n\nDidn’t find any major issues" % H[:7]
+        body = "**Reviewed commit:** `%s`\n\nDidn’t find any major issues" % H[:10]
         self.says(snapshot(issue_comments=[claude_review(), comment(2, CODEX, body)]), "MERGE")
         body = "Reviewed commit:`%s` Didn't find any major issues" % H
         self.says(snapshot(issue_comments=[claude_review(), comment(2, CODEX, body)]), "MERGE")
@@ -547,7 +557,7 @@ class TestExtra(Case):
                 imported.update(alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 imported.add((node.module or "").split(".")[0])
-        self.assertEqual(imported, {"fnmatch", "json", "os", "re", "sys"})
+        self.assertEqual(imported, {"json", "os", "re", "sys"})
         opens = [
             node
             for node in ast.walk(tree)
@@ -565,7 +575,7 @@ class TestAmendments(Case):
         rename = {"filename": "src/x.yml", "status": "renamed", "previous_filename": ".github/workflows/x.yml"}
         # The old path is checked too, so it is also outside "src/*".
         self.says(snapshot(files=[rename], allowed=["src/*"]), "OWNER: paths, protected")
-        self.says(snapshot(files=[rename], allowed=["*"]), "OWNER: protected")
+        self.says(snapshot(files=[rename], allowed=["**"]), "OWNER: protected")
 
     def test_a1_rename_from_a_path_that_is_not_allowed(self):
         rename = {"filename": "merge_check.py", "status": "renamed", "previous_filename": "old.py"}
@@ -573,7 +583,7 @@ class TestAmendments(Case):
 
     def test_a1_rename_to_a_protected_path(self):
         rename = {"filename": "docs/x.md", "status": "renamed", "previous_filename": "x.md"}
-        self.says(snapshot(files=[rename], allowed=["*"]), "OWNER: protected")
+        self.says(snapshot(files=[rename], allowed=["**"]), "OWNER: protected")
 
     def test_a1_rename_between_allowed_unprotected_paths_passes(self):
         rename = {"filename": "src/b.py", "status": "renamed", "previous_filename": "src/a.py"}
@@ -686,22 +696,22 @@ class TestHardening(Case):
 
     # H1 / V1
     def test_h1_empty_protected_list_keeps_the_defaults(self):
-        data = snapshot(files=files(".github/workflows/x.yml"), allowed=["*"], protected=[])
+        data = snapshot(files=files(".github/workflows/x.yml"), allowed=["**"], protected=[])
         self.says(data, "OWNER: protected")
         for name in ("docs/a.md", "apps/backend/prisma/m.sql", "AGENTS.md", "CLAUDE.md"):
             with self.subTest(name=name):
-                self.says(snapshot(files=files(name), allowed=["*"], protected=[]), "OWNER: protected")
+                self.says(snapshot(files=files(name), allowed=["**"], protected=[]), "OWNER: protected")
 
     def test_h1_listed_prefix_adds_to_the_defaults(self):
-        data = snapshot(files=files("docs/a.md"), allowed=["*"], protected=["src/secret/"])
+        data = snapshot(files=files("docs/a.md"), allowed=["**"], protected=["src/secret/"])
         self.says(data, "OWNER: protected")
-        data = snapshot(files=files("src/secret/k.txt"), allowed=["*"], protected=["src/secret/"])
+        data = snapshot(files=files("src/secret/k.txt"), allowed=["**"], protected=["src/secret/"])
         self.says(data, "OWNER: protected")
-        data = snapshot(files=files("src/other/k.txt"), allowed=["*"], protected=["src/secret/"])
+        data = snapshot(files=files("src/other/k.txt"), allowed=["**"], protected=["src/secret/"])
         self.says(data, "MERGE")
 
     def test_h1_absent_list_still_uses_the_defaults(self):
-        self.says(snapshot(files=files(".github/x.yml"), allowed=["*"]), "OWNER: protected")
+        self.says(snapshot(files=files(".github/x.yml"), allowed=["**"]), "OWNER: protected")
 
     # H2 / V2
     def test_h2_mergeable_state_other_than_clean(self):
@@ -709,9 +719,13 @@ class TestHardening(Case):
             with self.subTest(state=state):
                 self.says(snapshot(pull=with_pull(mergeable_state=state)), "OWNER: not-mergeable")
 
-    def test_h2_clean_absent_or_null_is_not_reported(self):
+    def test_h2_only_clean_is_not_reported(self):
+        # Superseded by build request #63 (J5): absent or null is now reported too.
         self.says(snapshot(pull=with_pull(mergeable_state="clean")), "MERGE")
-        self.says(snapshot(pull=with_pull(mergeable_state=None)), "MERGE")
+        self.says(snapshot(pull=with_pull(mergeable_state=None)), "OWNER: not-mergeable")
+        pull = with_pull()
+        del pull["mergeable_state"]
+        self.says(snapshot(pull=pull), "OWNER: not-mergeable")
         self.says(snapshot(), "MERGE")
 
     def test_h2_comes_right_after_not_open(self):
@@ -1054,6 +1068,161 @@ class TestOutputFailures(Case):
             )
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, b"")
+
+
+class TestAuditGaps(Case):
+    """Build request #63: changes J1 to J6 (audit findings A3, A4, A7 and A8)."""
+
+    def body(self, text):
+        return snapshot(pull=with_pull(body=text))
+
+    # J1 / V1
+    def test_j1_question_on_the_heading_line(self):
+        self.says(self.body("## Open question: should the fee apply?\n"), "OWNER: open-question")
+        self.says(self.body("## Open questions - which table?\n\n## Next\nx"), "OWNER: open-question")
+        self.says(self.body("# open question which one\n"), "OWNER: open-question")
+
+    def test_j1_heading_with_nothing_or_none_is_not_reported(self):
+        for text in ("## Open question", "## Open questions:", "## Open questions: none", "## Open questions - None.", "## Open questions: NONE ##"):
+            with self.subTest(text=text):
+                self.says(self.body(text + "\n\n## Next\nx\n"), "MERGE")
+
+    def test_j1_heading_with_none_still_checks_the_text_under_it(self):
+        self.says(self.body("## Open questions: none\nWhich table?\n"), "OWNER: open-question")
+
+    def test_j1_heading_question_inside_a_fence_is_ignored(self):
+        self.says(self.body("```\n## Open question: which?\n```\n"), "MERGE")
+
+    def test_j1_question_for_the_founder_lines(self):
+        for line in (
+            "- Question for the founder: which table?",
+            "Question for the owner: which table?",
+            "## Founder question: which table?",
+            "* **Question for the founder**: which table?",
+            "  - founder questions: x",
+            "### QUESTION FOR THE FOUNDER",
+        ):
+            with self.subTest(line=line):
+                self.says(self.body("## Summary\nx\n\n%s\n\n## Tests\nall\n" % line), "OWNER: open-question")
+
+    def test_j1_question_for_the_founder_in_a_fence_or_mid_line_is_ignored(self):
+        self.says(self.body("```\n- Question for the founder: which?\n```\n"), "MERGE")
+        self.says(self.body("We have no Question for the founder here.\n"), "MERGE")
+
+    # J2 / V2
+    def test_j2_short_reviewed_commit_counts_as_no_review(self):
+        body = "Reviewed commit: `%s`\nDidn't find any major issues" % H[:7]
+        self.says(snapshot(issue_comments=[claude_review(), comment(2, CODEX, body)]), "OWNER: codex-review")
+        body = "Reviewed commit: `%s`\nDidn't find any major issues" % H[:9]
+        self.says(snapshot(issue_comments=[claude_review(), comment(2, CODEX, body)]), "OWNER: codex-review")
+
+    def test_j2_ten_or_more_characters_count(self):
+        for length in (10, 11, 40):
+            with self.subTest(length=length):
+                self.says(snapshot(issue_comments=[claude_review(), codex_review(sha=H[:length])]), "MERGE")
+
+    def test_j2_a_long_value_that_is_not_a_prefix_does_not_count(self):
+        self.says(snapshot(issue_comments=[claude_review(), codex_review(sha=H[:9] + "f")]), "OWNER: codex-review")
+
+    # J3 / V3
+    def test_j3_alt_text_markers_in_the_summary(self):
+        for marker in ("[P1", "[P0", "![P1 Badge](x)", "[P1]"):
+            with self.subTest(marker=marker):
+                body = "Codex Review: Didn't find any major issues.\n\n%s Crash\n\nReviewed commit: `%s`" % (marker, H[:10])
+                data = snapshot(issue_comments=[claude_review(), comment(2, CODEX, body)])
+                self.says(data, "OWNER: codex-p1")
+
+    def test_j3_line_starting_with_p0_or_p1(self):
+        for line in ("P1: crash", "P0 crash", "  P1 : x", "\tP0: x"):
+            with self.subTest(line=line):
+                body = "Codex Review: Didn't find any major issues.\n%s\nReviewed commit: `%s`" % (line, H[:10])
+                data = snapshot(issue_comments=[claude_review(), comment(2, CODEX, body)])
+                self.says(data, "OWNER: codex-p1")
+                self.says(snapshot(review_comments=[review_comment(5, line)]), "OWNER: codex-p1")
+
+    def test_j3_markers_in_inline_comments_for_the_head(self):
+        for text in ("[P1 Badge] x", "[P0] x", "P1: x"):
+            with self.subTest(text=text):
+                self.says(snapshot(review_comments=[review_comment(5, text)]), "OWNER: codex-p1")
+                self.says(snapshot(review_comments=[review_comment(5, text, commit_id=H2)]), "MERGE")
+                self.says(snapshot(review_comments=[review_comment(5, text, login="someone")]), "MERGE")
+
+    def test_j3_words_that_only_start_with_p1_are_not_markers(self):
+        for text in ("P10: x", "P1x", "not P1: x", "P2: x", "Ship P1"):
+            with self.subTest(text=text):
+                self.says(snapshot(review_comments=[review_comment(5, text)]), "MERGE")
+
+    # J4 / V4
+    def test_j4_required_checks_cannot_shrink(self):
+        only_tests = snapshot(required_checks=["tests"], check_runs={"check_runs": [run(1, "tests")]})
+        self.says(only_tests, "OWNER: checks")
+        only_ci = snapshot(required_checks=["ci"], check_runs={"check_runs": [run(1, "ci")]})
+        self.says(only_ci, "OWNER: checks")
+
+    def test_j4_listed_names_only_add(self):
+        runs = {"check_runs": [run(1, "tests"), run(2, "review"), run(3, "ci", conclusion="failure")]}
+        self.says(snapshot(required_checks=["tests"], check_runs=runs), "MERGE")
+        self.says(snapshot(required_checks=["ci"], check_runs=runs), "OWNER: checks")
+        self.says(snapshot(required_checks=["tests", "ci"], check_runs=runs), "OWNER: checks")
+        good = {"check_runs": [run(1, "tests"), run(2, "review"), run(3, "ci")]}
+        self.says(snapshot(required_checks=["ci"], check_runs=good), "MERGE")
+
+    # J5 / V5
+    def test_j5_unknown_mergeability_is_reported(self):
+        for state in (None, "unknown", "dirty", "blocked", "UNKNOWN", "Clean", ""):
+            with self.subTest(state=state):
+                self.says(snapshot(pull=with_pull(mergeable_state=state)), "OWNER: not-mergeable")
+        pull = with_pull()
+        del pull["mergeable_state"]
+        self.says(snapshot(pull=pull), "OWNER: not-mergeable")
+
+    def test_j5_clean_is_not_reported(self):
+        self.says(snapshot(pull=with_pull(mergeable_state="clean")), "MERGE")
+
+    # J6 / V6
+    def test_j6_star_and_question_mark_stop_at_folders(self):
+        allowed = ["src/*.py"]
+        self.says(snapshot(files=files("src/x.py"), allowed=allowed), "MERGE")
+        self.says(snapshot(files=files("src/sub/x.py"), allowed=allowed), "OWNER: paths")
+        self.says(snapshot(files=files("src/s/x.py"), allowed=["src/?/x.py"]), "MERGE")
+        self.says(snapshot(files=files("src//x.py"), allowed=["src/?/x.py"]), "OWNER: paths")
+        self.says(snapshot(files=files("a/b"), allowed=["a?b"]), "OWNER: paths")
+        self.says(snapshot(files=files("a/b"), allowed=["a[/]b"]), "OWNER: paths")
+        self.says(snapshot(files=files("a/b"), allowed=["a[!x]b"]), "OWNER: paths")
+        self.says(snapshot(files=files("aqb"), allowed=["a[!x]b"]), "MERGE")
+
+    def test_j6_double_star_matches_whole_folders(self):
+        allowed = ["src/**/*.py"]
+        for name in ("src/x.py", "src/a/x.py", "src/a/b/c/x.py"):
+            with self.subTest(name=name):
+                self.says(snapshot(files=files(name), allowed=allowed), "MERGE")
+        for name in ("src/x.txt", "other/x.py", "srcx.py", "src/a/x.py/y"):
+            with self.subTest(name=name):
+                self.says(snapshot(files=files(name), allowed=allowed), "OWNER: paths")
+
+    def test_j6_double_star_at_the_start_and_end(self):
+        self.says(snapshot(files=files("x.py", "a/b/x.py"), allowed=["**/x.py"]), "MERGE")
+        self.says(snapshot(files=files("a/b/c", "a/d"), allowed=["a/**"]), "MERGE")
+        self.says(snapshot(files=files("b/d"), allowed=["a/**"]), "OWNER: paths")
+        self.says(snapshot(files=files("a"), allowed=["a/**"]), "OWNER: paths")
+
+    def test_j6_double_star_inside_a_name_acts_as_one_star(self):
+        self.says(snapshot(files=files("src/axxb"), allowed=["src/a**b"]), "MERGE")
+        self.says(snapshot(files=files("src/a/b"), allowed=["src/a**b"]), "OWNER: paths")
+
+    def test_j6_patterns_without_wildcards_match_exactly(self):
+        self.says(snapshot(files=files("a/b.py"), allowed=["a/b.py"]), "MERGE")
+        self.says(snapshot(files=files("a/b.py.bak"), allowed=["a/b.py"]), "OWNER: paths")
+        self.says(snapshot(files=files("a.b"), allowed=["a.b"]), "MERGE")
+        self.says(snapshot(files=files("axb"), allowed=["a.b"]), "OWNER: paths")
+        self.says(snapshot(files=files("a(b"), allowed=["a(b"]), "MERGE")
+
+    def test_j6_odd_set_characters_do_not_warn_or_crash(self):
+        for pattern in ("[[]", "[a&&b]", "[a~~b]", "[a||b]", "[^a]", "[\\]", "[]]"):
+            with self.subTest(pattern=pattern):
+                result = self.run_program(self.write(snapshot(files=files("x"), allowed=[pattern])))
+                self.assertEqual(result.stderr, b"")
+                self.assertEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

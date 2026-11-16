@@ -256,6 +256,7 @@ def snapshot(**parts):
             "number": 7,
             "state": "open",
             "draft": False,
+            "mergeable_state": "clean",
             "head": {"sha": H},
             "body": "## Summary\nOne thing.\n\n## Open questions\nnone\n",
         },

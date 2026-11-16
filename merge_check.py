@@ -1,4 +1,4 @@
-"""Decide whether the coordinator may merge without the owner (build requests #46, #48, #50, #52 and #58).
+"""Decide whether the coordinator may merge without the owner (build requests #46, #48, #50, #52, #58 and #63).
 
 Usage: python merge_check.py SNAPSHOT_FILE
 
@@ -17,7 +17,6 @@ Exit status: 0 success, 1 the result could not be written, 2 bad input.
 Runs on Python 3.8 or later; standard library only.
 """
 
-import fnmatch
 import json
 import os
 import re
@@ -31,7 +30,10 @@ CODEX = "chatgpt-codex-connector[bot]"
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 REVIEWED_RE = re.compile(r"Reviewed commit:[* ]*`([0-9a-f]{7,40})`")
 CODEX_CLEAN = ("Didn't find any major issues", "Didn’t find any major issues")
-CODEX_BADGES = ("P0 Badge", "P1 Badge")
+CODEX_BADGES = ("P0 Badge", "P1 Badge", "[P0", "[P1")
+CODEX_LINE_RE = re.compile(r"^[ \t]*P[01][: ]", re.MULTILINE)
+MIN_REVIEWED = 10  # a Codex "Reviewed commit" value needs at least this many hex characters
+QUESTION_STARTS = ("question for the founder", "question for the owner", "founder question")
 
 
 class BadInput(Exception):
@@ -203,14 +205,16 @@ def read_truncated(data):
 
 
 def read_required(data):
+    """`tests` and `review` are always required; a listed `required_checks` only adds names."""
+    required = list(DEFAULT_CHECKS)
     if "required_checks" not in data:
-        return list(DEFAULT_CHECKS)
+        return required
     names = need_list(data["required_checks"], "required_checks must be a list")
     need(len(names) > 0, "required_checks must not be empty")
     for name in names:
         need(isinstance(name, str) and name != "", "a required check must be a non-empty string")
     need(len(set(names)) == len(names), "required checks must be distinct")
-    return names
+    return required + [name for name in names if name not in required]
 
 
 def read_snapshot(data):
@@ -259,7 +263,7 @@ def rule_not_open(snap):
 
 
 def rule_not_mergeable(snap):
-    return snap["mergeable"] is not None and snap["mergeable"] != "clean"
+    return snap["mergeable"] != "clean"  # absent, null, unknown or anything but clean
 
 
 def rule_checks(snap):
@@ -301,7 +305,7 @@ def codex_summary(snap):
     for comment in snap["issue_comments"]:
         if comment[1] != CODEX:
             continue
-        if any(sha.startswith(found) for found in REVIEWED_RE.findall(comment[2])):
+        if any(len(found) >= MIN_REVIEWED and sha.startswith(found) for found in REVIEWED_RE.findall(comment[2])):
             mine.append(comment)
     return latest(mine)
 
@@ -311,15 +315,77 @@ def rule_codex_review(snap):
     return decisive is None or not any(phrase in decisive[2] for phrase in CODEX_CLEAN)
 
 
+def serious(text):
+    """True if the Codex text holds a P0 or P1 marker."""
+    return any(badge in text for badge in CODEX_BADGES) or CODEX_LINE_RE.search(text) is not None
+
+
 def rule_codex_p1(snap):
     decisive = codex_summary(snap)
-    if decisive is not None and any(badge in decisive[2] for badge in CODEX_BADGES):
+    if decisive is not None and serious(decisive[2]):
         return True
     for comment in snap["review_comments"]:
-        if comment[1] == CODEX and comment[3] == snap["sha"]:
-            if any(badge in comment[2] for badge in CODEX_BADGES):
-                return True
+        if comment[1] == CODEX and comment[3] == snap["sha"] and serious(comment[2]):
+            return True
     return False
+
+
+def pattern_regex(pattern):
+    """Translate an allowed-path pattern to a regular expression.
+
+    `*`, `?` and a `[...]` set never cross a `/`. `**` as a whole folder name
+    stands for any number of whole folders (`a/**/b` takes in `a/b` and `a/x/y/b`;
+    a final `/**` takes in everything below the folder). Any other run of
+    stars acts as one `*`. A pattern without wildcards must equal the name.
+    """
+    out = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        char = pattern[i]
+        if char == "*":
+            j = i
+            while j < n and pattern[j] == "*":
+                j += 1
+            whole = j - i == 2 and (i == 0 or pattern[i - 1] == "/") and (j == n or pattern[j] == "/")
+            if whole and j == n:
+                out.append(".+")
+            elif whole:
+                out.append("(?:[^/]+/)*")
+                j += 1  # the slash after ** belongs to it
+            else:
+                out.append("[^/]*")
+            i = j
+        elif char == "?":
+            out.append("[^/]")
+            i += 1
+        elif char == "[":
+            j = i + 1
+            if j < n and pattern[j] == "!":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j >= n:
+                out.append(re.escape(char))
+                i += 1
+            else:
+                stuff = re.sub(r"([\\\[&~|])", r"\\\1", pattern[i + 1 : j])
+                if stuff[:1] == "!":
+                    stuff = "^" + stuff[1:]
+                elif stuff[:1] == "^":
+                    stuff = "\\" + stuff
+                out.append("(?!/)[" + stuff + "]")
+                i = j + 1
+        else:
+            out.append(re.escape(char))
+            i += 1
+    return "".join(out)
+
+
+def path_allowed(name, patterns):
+    return any(re.fullmatch(pattern_regex(pattern), name, re.DOTALL) for pattern in patterns)
 
 
 def rule_paths(snap):
@@ -330,7 +396,7 @@ def rule_paths(snap):
     if snap["file_count"] == 0:
         return True  # nothing changed, so there is nothing to merge
     for name in snap["files"]:
-        if not any(fnmatch.fnmatchcase(name, pattern) for pattern in snap["allowed"]):
+        if not path_allowed(name, snap["allowed"]):
             return True
     return False
 
@@ -403,14 +469,33 @@ def fenced_lines(lines):
     return flags
 
 
+def heading_text(line):
+    """The text on an open-question heading line after "open question(s)" and any `:` or `-`."""
+    rest = line.lstrip("# ")[len("open question") :]
+    if rest[:1] in ("s", "S"):
+        rest = rest[1:]
+    return rest.lstrip(" \t:-").rstrip(" \t#").strip()
+
+
+def is_none(text):
+    return text.lower() in ("none", "none.")
+
+
 def rule_open_question(snap):
     if snap["body"] is None:
         return False
     lines = split_lines(snap["body"])
     fenced = fenced_lines(lines)
     for index, line in enumerate(lines):
-        if fenced[index] or not line.lstrip("# ").lower().startswith("open question"):
+        if fenced[index]:
             continue
+        if line.lstrip("#-* \t").lower().startswith(QUESTION_STARTS):
+            return True
+        if not line.lstrip("# ").lower().startswith("open question"):
+            continue
+        own = heading_text(line)
+        if own != "" and not is_none(own):
+            return True
         following = []
         for position in range(index + 1, len(lines)):
             later = lines[position]
@@ -421,7 +506,7 @@ def rule_open_question(snap):
         if text.startswith("- "):
             text = text[2:]
         text = text.strip()
-        if text != "" and text.lower() not in ("none", "none."):
+        if text != "" and not is_none(text):
             return True
     return False
 
