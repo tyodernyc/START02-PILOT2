@@ -1246,10 +1246,6 @@ class TestAuditGaps(Case):
                 self.assertEqual(result.returncode, 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestCoordinatorFixes(Case):
     """Coordinator fix round on pull request 64: the review's P1-marker finding and Codex's backtracking finding."""
 
@@ -1276,3 +1272,7 @@ class TestCoordinatorFixes(Case):
         self.says(snapshot(files=files(name), allowed=["**/" * 20 + "*.py"]), "OWNER: paths")
         self.says(snapshot(files=files(name), allowed=["**/*.txt"]), "MERGE")
         self.assertLess(time.monotonic() - started, 10)
+
+
+if __name__ == "__main__":
+    unittest.main()
