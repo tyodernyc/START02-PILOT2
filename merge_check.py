@@ -330,6 +330,35 @@ def rule_codex_p1(snap):
     return False
 
 
+def set_regex(stuff):
+    """Translate the inside of a `[...]` set; it never takes in `/`.
+
+    Every character is escaped on its own, so no text inside a set can reach
+    the regular expression engine as syntax. A reversed range such as `z-a`
+    takes in nothing.
+    """
+    negated = stuff[:1] == "!"
+    if negated:
+        stuff = stuff[1:]
+    items = []
+    k = 0
+    while k < len(stuff):
+        if k + 2 < len(stuff) and stuff[k + 1] == "-":
+            if stuff[k] <= stuff[k + 2]:
+                items.append(set_char(stuff[k]) + "-" + set_char(stuff[k + 2]))
+            k += 3
+        else:
+            items.append(set_char(stuff[k]))
+            k += 1
+    if negated:
+        return "(?!/)[^" + "".join(items) + "]" if items else "[^/]"
+    return "(?!/)[" + "".join(items) + "]" if items else "(?!)"
+
+
+def set_char(char):
+    return "\\" + char if char in "\\[]^-&~|" else char
+
+
 def pattern_regex(pattern):
     """Translate an allowed-path pattern to a regular expression.
 
@@ -371,12 +400,7 @@ def pattern_regex(pattern):
                 out.append(re.escape(char))
                 i += 1
             else:
-                stuff = re.sub(r"([\\\[&~|])", r"\\\1", pattern[i + 1 : j])
-                if stuff[:1] == "!":
-                    stuff = "^" + stuff[1:]
-                elif stuff[:1] == "^":
-                    stuff = "\\" + stuff
-                out.append("(?!/)[" + stuff + "]")
+                out.append(set_regex(pattern[i + 1 : j]))
                 i = j + 1
         else:
             out.append(re.escape(char))
@@ -384,8 +408,15 @@ def pattern_regex(pattern):
     return "".join(out)
 
 
+def pattern_matches(name, pattern):
+    try:
+        return re.fullmatch(pattern_regex(pattern), name, re.DOTALL) is not None
+    except re.error:
+        return False  # a pattern the translation cannot express matches no path
+
+
 def path_allowed(name, patterns):
-    return any(re.fullmatch(pattern_regex(pattern), name, re.DOTALL) for pattern in patterns)
+    return any(pattern_matches(name, pattern) for pattern in patterns)
 
 
 def rule_paths(snap):

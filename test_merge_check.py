@@ -1217,6 +1217,26 @@ class TestAuditGaps(Case):
         self.says(snapshot(files=files("axb"), allowed=["a.b"]), "OWNER: paths")
         self.says(snapshot(files=files("a(b"), allowed=["a(b"]), "MERGE")
 
+    def test_j6_reversed_and_odd_ranges_do_not_crash_or_warn(self):
+        # Review finding on the first head: "[z-a]" ended with exit 2 and "[a--b]" warned on stderr.
+        for pattern in ("[z-a]", "[a--b]", "[a-c-e]", "[--a]", "[a-]", "[-a]", "[!z-a]", "[!]"):
+            with self.subTest(pattern=pattern):
+                result = self.run_program(self.write(snapshot(files=files("x"), allowed=[pattern])))
+                self.assertEqual(result.stderr, b"")
+                self.assertEqual(result.returncode, 0)
+                self.assertIn(result.stdout, (b"MERGE\n", b"OWNER: paths\n"))
+
+    def test_j6_range_sets_match_as_before(self):
+        self.says(snapshot(files=files("b"), allowed=["[a-c]"]), "MERGE")
+        self.says(snapshot(files=files("d"), allowed=["[a-c]"]), "OWNER: paths")
+        self.says(snapshot(files=files("d"), allowed=["[z-a]"]), "OWNER: paths")
+        self.says(snapshot(files=files("-"), allowed=["[a-]"]), "MERGE")
+        self.says(snapshot(files=files("d"), allowed=["[!a-c]"]), "MERGE")
+        self.says(snapshot(files=files("b"), allowed=["[!a-c]"]), "OWNER: paths")
+        self.says(snapshot(files=files("b"), allowed=["[!z-a]"]), "MERGE")
+        self.says(snapshot(files=files("a"), allowed=["[]a]"]), "MERGE")
+        self.says(snapshot(files=files("a/b"), allowed=["a[!x]b"]), "OWNER: paths")
+
     def test_j6_odd_set_characters_do_not_warn_or_crash(self):
         for pattern in ("[[]", "[a&&b]", "[a~~b]", "[a||b]", "[^a]", "[\\]", "[]]"):
             with self.subTest(pattern=pattern):
