@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1247,3 +1248,31 @@ class TestAuditGaps(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCoordinatorFixes(Case):
+    """Coordinator fix round on pull request 64: the review's P1-marker finding and Codex's backtracking finding."""
+
+    def test_bare_and_punctuated_p1_markers_on_an_inline_comment(self):
+        for text in ("P1", "P1.", "P1-crash on empty input", "**P1**: x", "(P1) x", "[P0] x", "> P1 x", "_P0_ x"):
+            with self.subTest(text=text):
+                self.says(snapshot(review_comments=[review_comment(5, text)]), "OWNER: codex-p1")
+
+    def test_words_that_only_contain_p1_are_not_markers(self):
+        for text in ("P10 is a size", "xP1 y", "AP1", "Severity: P1", "**P1x**"):
+            with self.subTest(text=text):
+                self.says(snapshot(review_comments=[review_comment(5, text)]), "MERGE")
+
+    def test_star_heavy_pattern_on_a_long_name_finishes_quickly(self):
+        name = "a" * 200 + "c"
+        pattern = "*a" * 20 + "*b"
+        started = time.monotonic()
+        self.says(snapshot(files=files(name), allowed=[pattern]), "OWNER: paths")
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_folder_pattern_on_a_deep_name_finishes_quickly(self):
+        name = "/".join(["a"] * 150) + "/x.txt"
+        started = time.monotonic()
+        self.says(snapshot(files=files(name), allowed=["**/" * 20 + "*.py"]), "OWNER: paths")
+        self.says(snapshot(files=files(name), allowed=["**/*.txt"]), "MERGE")
+        self.assertLess(time.monotonic() - started, 10)

@@ -31,7 +31,7 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 REVIEWED_RE = re.compile(r"Reviewed commit:[* ]*`([0-9a-f]{7,40})`")
 CODEX_CLEAN = ("Didn't find any major issues", "Didn’t find any major issues")
 CODEX_BADGES = ("P0 Badge", "P1 Badge", "[P0", "[P1")
-CODEX_LINE_RE = re.compile(r"^[ \t]*P[01][: ]", re.MULTILINE)
+CODEX_LINE_RE = re.compile(r"^[ \t>*_(\[]*P[01](?![0-9A-Za-z])", re.MULTILINE)  # a line that starts with a P0 or P1 marker, after any quote, emphasis or bracket characters
 MIN_REVIEWED = 10  # a Codex "Reviewed commit" value needs at least this many hex characters
 QUESTION_STARTS = ("question for the founder", "question for the owner", "founder question")
 
@@ -359,8 +359,8 @@ def set_char(char):
     return "\\" + char if char in "\\[]^-&~|" else char
 
 
-def pattern_regex(pattern):
-    """Translate an allowed-path pattern to a regular expression.
+def pattern_tokens(pattern):
+    """Split an allowed-path pattern into matching steps.
 
     `*`, `?` and a `[...]` set never cross a `/`. `**` as a whole folder name
     stands for any number of whole folders (`a/**/b` takes in `a/b` and `a/x/y/b`;
@@ -378,15 +378,15 @@ def pattern_regex(pattern):
                 j += 1
             whole = j - i == 2 and (i == 0 or pattern[i - 1] == "/") and (j == n or pattern[j] == "/")
             if whole and j == n:
-                out.append(".+")
+                out.append(("rest", None))
             elif whole:
-                out.append("(?:[^/]+/)*")
+                out.append(("folders", None))
                 j += 1  # the slash after ** belongs to it
             else:
-                out.append("[^/]*")
+                out.append(("star", None))
             i = j
         elif char == "?":
-            out.append("[^/]")
+            out.append(("one", None))
             i += 1
         elif char == "[":
             j = i + 1
@@ -397,22 +397,63 @@ def pattern_regex(pattern):
             while j < n and pattern[j] != "]":
                 j += 1
             if j >= n:
-                out.append(re.escape(char))
+                out.append(("char", char))
                 i += 1
             else:
-                out.append(set_regex(pattern[i + 1 : j]))
+                out.append(("set", re.compile(set_regex(pattern[i + 1 : j]), re.DOTALL)))
                 i = j + 1
         else:
-            out.append(re.escape(char))
+            out.append(("char", char))
             i += 1
-    return "".join(out)
+    return out
 
 
 def pattern_matches(name, pattern):
+    """True if the whole name matches the pattern.
+
+    The name is walked once per step, keeping the set of positions the
+    pattern so far can end at, so its time grows with the pattern length times
+    the square of the name length at most, never exponentially.
+    """
     try:
-        return re.fullmatch(pattern_regex(pattern), name, re.DOTALL) is not None
+        tokens = pattern_tokens(pattern)
     except re.error:
         return False  # a pattern the translation cannot express matches no path
+    n = len(name)
+    positions = {0}
+    for kind, value in tokens:
+        after = set()
+        for p in positions:
+            if kind == "char":
+                if p < n and name[p] == value:
+                    after.add(p + 1)
+            elif kind == "one":
+                if p < n and name[p] != "/":
+                    after.add(p + 1)
+            elif kind == "set":
+                if p < n and value.fullmatch(name[p]) is not None:
+                    after.add(p + 1)
+            elif kind == "star":
+                q = p
+                after.add(q)
+                while q < n and name[q] != "/":
+                    q += 1
+                    after.add(q)
+            elif kind == "folders":
+                q = p
+                after.add(q)
+                while True:
+                    k = name.find("/", q)
+                    if k <= q:  # no further slash, or an empty folder name
+                        break
+                    q = k + 1
+                    after.add(q)
+            else:  # "rest": one or more characters of anything
+                after.update(range(p + 1, n + 1))
+        positions = after
+        if not positions:
+            return False
+    return n in positions
 
 
 def path_allowed(name, patterns):
